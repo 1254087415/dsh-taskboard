@@ -18,6 +18,7 @@ import { injectStyles } from './styles.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountBoard } from './board-mount.tsx'
 import { createSessionJumper, type SessionsServiceFace, type WorkspacesServiceFace } from './session-jump.ts'
+import { mountSessionCardLinks } from './session-card-link.ts'
 
 /** Client plugin name. */
 export const name = 'dsh-taskboard/client'
@@ -269,6 +270,11 @@ export function apply(ctx: ClientContextFace): void {
     try {
       disposers.push(mountSidebarEntry(controller))
       disposers.push(mountBoard(controller))
+      disposers.push(mountSessionCardLinks({
+        client,
+        controller,
+        getSessions: () => ctx.get?.('sessions') as SessionsServiceFace | undefined,
+      }))
     } catch (error) {
       // DOM failures degrade the board, never the GUI.
       console.error('[dsh-taskboard] mount failed:', error)

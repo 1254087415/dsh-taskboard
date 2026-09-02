@@ -28,6 +28,7 @@ import { dshHomePath } from './host/sdk.ts'
 import { TaskStore } from './host/store.ts'
 import { TemplateStore } from './host/templates.ts'
 import { ExternalSessionSyncService } from './host/session-sync.ts'
+import { SessionTracker } from './host/session-tracker.ts'
 import { registerTaskboardTools, workspaceFace } from './host/tools.ts'
 
 /** Ledger file name under the DSH home. */
@@ -99,6 +100,20 @@ export function apply(ctx: Context): void {
     }
 
     let agentSessions: { get?: (id: string) => unknown; list?: () => unknown[] } | undefined
+
+    // Session auto-tracker (0.6.1 本地增强): task-like sessions get an
+    // auto-created TODO card with per-turn progress comments; re-engaging the
+    // session moves the card back to in_progress; going idle for 30 minutes
+    // moves it to in_review so the user can mark it done. Distinct from the
+    // upstream ExternalSessionSyncService (opt-in, different semantics).
+    const tracker = new SessionTracker({
+      store,
+      events,
+      workspaces: workspaceFace(wsCtx.workspaceRegistry),
+      now,
+      linksFile: dshHomePath('dsh-taskboard-session-links.json'),
+    })
+    disposers.push(() => tracker.dispose())
 
     // External workspace sessions sync service (0.5.4).
     const sessionSync = new ExternalSessionSyncService({

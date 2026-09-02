@@ -18,7 +18,7 @@ export const en: TaskboardDict = {
   'shared.current': ' (current: {name})',
   'shared.entry.aria': 'Agent task board',
   'shared.entry.label': 'Task board',
-  'shared.stats.title': 'To do {todo} | In progress {doing} | In review {review} (todo | in progress | in review)',
+  'shared.stats.title': 'Backlog {backlog} | To do {todo} | In progress {doing} | In review {review} (backlog | todo | in progress | in review)',
   'shared.duplicate.suffix': ' (copy)',
 
   // ── status / urgency / outcome enums (labels.ts) ──────────────────

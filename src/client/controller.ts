@@ -7,7 +7,7 @@
  *
  * @module dsh-taskboard/client/controller
  */
-import type { ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, PromptCompletionsResponse, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
+import type { ChangeEvent, DiagnosticsResponse, DiffResponse, ImportCommitResponse, ImportPreviewResponse, PromptCompletionsResponse, SessionCandidate, SessionImportResult, SessionPick, TaskTemplate, TaskTemplateSpec, UpdateTaskBody, WorkspaceView } from '../shared/api.ts'
 import type { ChecklistItem, TaskLedger, TaskRecord, Urgency } from '../shared/protocol.ts'
 import { emptyLedger } from '../shared/protocol.ts'
 import type { TaskboardClient } from './api.ts'
@@ -75,6 +75,8 @@ export interface ControllerState {
   importOpen: boolean
   /** Board-settings modal visible (0.5.0). */
   settingsOpen: boolean
+  /** Retained-session import modal visible (0.6.0 本地增强). */
+  sessionImportOpen: boolean
   /** Fields a chosen template prefills into the create form (consumed on open). */
   templatePrefill?: TaskTemplateSpec
   /** Transient error surface (action failures); cleared on next success. */
@@ -98,6 +100,7 @@ function initialState(): ControllerState {
     tplManagerOpen: false,
     importOpen: false,
     settingsOpen: false,
+    sessionImportOpen: false,
   }
 }
 
@@ -711,6 +714,35 @@ export class BoardController {
 
   /** Close the import modal. */
   closeImport(): void { this.setState({ importOpen: false }) }
+
+  // ----------------------------- retained-session import (0.6.0 本地增强)
+  /** Open the retained-session import dialog. */
+  openSessionImport(): void { this.setState({ sessionImportOpen: true }) }
+
+  /** Close the retained-session import dialog. */
+  closeSessionImport(): void { this.setState({ sessionImportOpen: false }) }
+
+  /** Retained-session import candidates (0.6.0 本地增强). */
+  async sessionCandidates(): Promise<SessionCandidate[] | undefined> {
+    try {
+      return await this.client.sessionCandidates()
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+      return undefined
+    }
+  }
+
+  /** Batch-import picked sessions as board cards (0.6.0 本地增强). */
+  async importSessions(picks: SessionPick[]): Promise<SessionImportResult | undefined> {
+    try {
+      const value = await this.client.importSessions(picks)
+      await this.refresh()
+      return value
+    } catch (error) {
+      this.setState({ error: error instanceof Error ? error.message : String(error) })
+      return undefined
+    }
+  }
 
   /** Dry-run an import file: classify its tasks against the live ledger. */
   async importPreview(file: unknown): Promise<ImportPreviewResponse['plan'] | undefined> {

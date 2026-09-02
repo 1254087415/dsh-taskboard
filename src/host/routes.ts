@@ -10,7 +10,7 @@
  * @module dsh-taskboard/host/routes
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { readdir, rm } from 'node:fs/promises'
+import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the webServer Context merge (ctx.webServer).
@@ -41,12 +41,13 @@ import {
   type TaskRecord,
 } from '../shared/protocol.ts'
 import { WORKTREE_DIR, worktreePathOf, type GitFace } from './git.ts'
-import type { CatalogModelItem, CatalogPresetItem, TaskTemplate } from '../shared/api.ts'
+import type { CatalogModelItem, CatalogPresetItem, SessionLinkRow, TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
 import type { TaskStore } from './store.ts'
 import { ERR, ToolError } from './tools.ts'
 import type { WorkspaceFace } from './tools.ts'
+import { dshHomePath } from './sdk.ts'
 
 /** Heartbeat cadence for the SSE stream. */
 const HEARTBEAT_MS = 20_000
@@ -342,6 +343,65 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           })
           return
         }
+        // Retained-session import candidates (0.6.0 本地增强): read the DSH
+        // session ledger and workspace registry, filter out archived /
+        // subagent / noise sessions, and return per-project candidates for
+        // the GUI import dialog. Read-only; fail-soft (empty list).
+        if (pathname === `${ROUTE_PREFIX}/sessions/candidates`) {
+          try {
+            const [projRaw, wsRaw] = await Promise.all([
+              readFile(dshHomePath('storages', 'session_projcache.json'), 'utf8'),
+              readFile(dshHomePath('storages', 'workspace.json'), 'utf8'),
+            ])
+            const proj = JSON.parse(projRaw) as { tables?: { sessions?: Record<string, { identity?: { cwd?: string }; rows?: { title?: { val?: string }; subagent?: { val?: unknown } } }> } }
+            const wsDoc = JSON.parse(wsRaw) as { global?: { archivedSessionIds?: string[] }; tables?: { workspaces?: Record<string, { path: string; title?: string }> } }
+            const archived = new Set(wsDoc.global?.archivedSessionIds ?? [])
+            const byPath = new Map<string, { id: string; title: string }>()
+            for (const [wid, w] of Object.entries(wsDoc.tables?.workspaces ?? {})) byPath.set(w.path, { id: wid, title: w.title ?? wid })
+            const NOISE = ['You are a probe agent', '这个模式下你需要什么', 'Current runtime context', '启动会话', '启动服务', 'web端', '后端', '滴滴', '继续']
+            const TASKLIKERE = /(修复|改造|完成|调研|排查|实现|开发|添加|新增|写|整理|部署|升级|接入|优化|梳理|检查|迁移|设计|对接|生成|配置|推送|合并|解密)/
+            const candidates: Array<{ sessionId: string; title: string; workspaceId: string; workspaceTitle: string; taskLike: boolean }> = []
+            for (const [sid, s] of Object.entries(proj.tables?.sessions ?? {})) {
+              // subagent: rows.subagent.val carries an identity.mode entry
+              // (one-shot / continuable). Plain sessions have an empty {}
+              // subagent row — treat only a real identity.mode as a subagent.
+              const subVal = s.rows?.subagent?.val
+              if (typeof subVal === 'object' && subVal !== null && (subVal as { identity?: { mode?: string } }).identity?.mode !== undefined) continue
+              if (archived.has(sid)) continue
+              if (sid.startsWith('session-taskboard')) continue
+              const title = (s.rows?.title?.val ?? '').trim()
+              if (!title || NOISE.some(n => title.startsWith(n))) continue
+              const cwd = s.identity?.cwd ?? ''
+              const ws = byPath.get(cwd)
+              if (ws === undefined) continue
+              candidates.push({ sessionId: sid, title: title.slice(0, 200), workspaceId: ws.id, workspaceTitle: ws.title, taskLike: TASKLIKERE.test(title) })
+            }
+            json(res, { ok: true, value: candidates })
+          } catch {
+            json(res, { ok: true, value: [] })
+          }
+          return
+        }
+        // All session→card links (0.6.1 本地增强): reverse direction for the
+        // sidebar session-row jump entry. Filters out links whose card was
+        // trashed or purged. Read-only; fail-soft (empty list).
+        if (pathname === `${ROUTE_PREFIX}/sessions/links`) {
+          try {
+            const raw = await readFile(dshHomePath('dsh-taskboard-session-links.json'), 'utf8').catch(() => '{}')
+            const links = JSON.parse(raw) as Record<string, string>
+            const byId = new Map(store.snapshot().tasks.map(t => [t.id, t]))
+            const rows: SessionLinkRow[] = []
+            for (const [sessionId, taskId] of Object.entries(links)) {
+              const task = byId.get(taskId)
+              if (task === undefined || task.trashedAt !== undefined) continue
+              rows.push({ sessionId, taskId, title: task.title, status: task.status })
+            }
+            json(res, { ok: true, value: rows })
+          } catch {
+            json(res, { ok: true, value: [] })
+          }
+          return
+        }
         if (pathname === `${ROUTE_PREFIX}/diagnostics`) {
           const ledger = store.snapshot()
           let staleRunning = 0
@@ -483,6 +543,63 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
       if (body === null) {
         const f = fail('invalid_input', 'body is not a JSON object')
         json(res, f.res, 400)
+        return
+      }
+
+      // --------------------------------------- POST /sessions/import (GUI)
+      // Batch-create board cards from retained sessions picked in the GUI
+      // import dialog (0.6.0 本地增强). Body: { picks: [{ sessionId, title,
+      // workspaceId, urgency? }] }. Actor = user (GUI), same validation as
+      // POST /tasks.
+      if (pathname === `${ROUTE_PREFIX}/sessions/import`) {
+        try {
+          const picksRaw = body.picks
+          if (!Array.isArray(picksRaw) || picksRaw.length === 0) {
+            throw new Error('Error: invalid_input: picks must be a non-empty array')
+          }
+          const created: Array<{ sessionId: string; taskId: string; title: string }> = []
+          const errors: Array<{ sessionId: string; error: string }> = []
+          for (const pick of picksRaw as Array<Record<string, unknown>>) {
+            try {
+              const sessionId = str(pick, 'sessionId') ?? ''
+              const title = normalizeTitle(str(pick, 'title') ?? '')
+              const workspaceId = str(pick, 'workspaceId') ?? ''
+              if (workspaces.get(workspaceId) === undefined) throw new Error('Error: not_found: unknown workspace')
+              const urgency = asUrgency(str(pick, 'urgency') ?? 'normal')
+              const now = options.now()
+              const task: TaskRecord = {
+                id: newTaskId(),
+                title,
+                description: `由留存会话 ${sessionId} 导入（GUI 会话导入）`,
+                prompt: normalizePrompt('按该会话目标完成任务并交接（report → comment → move in_review）'),
+                workspaceId,
+                urgency,
+                status: 'todo',
+                blocked: false,
+                execution: { mode: 'claim' },
+                isolation: defaultIsolationOf(store.snapshot().settings),
+                version: 1,
+                createdAt: now,
+                updatedAt: now,
+                createdBy: { kind: 'user' },
+                updatedBy: { kind: 'user' },
+                comments: [],
+                executions: [],
+              }
+              await store.mutate('task-created', ledger => {
+                ledger.tasks.push(task)
+                return [task]
+              })
+              created.push({ sessionId, taskId: task.id, title })
+            } catch (error) {
+              errors.push({ sessionId: str(pick, 'sessionId') ?? '?', error: error instanceof Error ? error.message : String(error) })
+            }
+          }
+          json(res, { ok: true, value: { created, errors } }, 201)
+        } catch (error) {
+          const f = toFail(error)
+          json(res, f.res, f.status)
+        }
         return
       }
 

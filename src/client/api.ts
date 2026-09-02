@@ -20,6 +20,10 @@ import type {
   PromptCompletionsResponse,
   RejectTaskBody,
   RunTaskBody,
+  SessionCandidate,
+  SessionImportResult,
+  SessionLinkRow,
+  SessionPick,
   SettingsResponse,
   StateResponse,
   TaskRecord,
@@ -102,6 +106,12 @@ export interface TaskboardClient {
   promptCompletions(): Promise<PromptCompletionsResponse>
   /** Model catalog and agent preset roster (0.5.5). */
   modelCatalog(): Promise<ModelCatalogResponse>
+  /** Retained-session import candidates (0.6.0 本地增强). */
+  sessionCandidates(): Promise<SessionCandidate[]>
+  /** All session→card links for the sidebar jump entry (0.6.1 本地增强). */
+  sessionLinks(): Promise<SessionLinkRow[]>
+  /** Batch-import picked sessions as board cards (0.6.0 本地增强). */
+  importSessions(picks: SessionPick[]): Promise<SessionImportResult>
   /** Subscribe to change frames; the disposer stops the stream. */
   stream(onChange: (event: ChangeEvent) => void, onGap: () => void): () => void
 }
@@ -139,6 +149,9 @@ export function createClient(): TaskboardClient {
     updateSettings: body => post('/dsh-taskboard/settings/update', body),
     promptCompletions: () => get<PromptCompletionsResponse>('/dsh-taskboard/prompt-completions'),
     modelCatalog: () => get<ModelCatalogResponse>('/dsh-taskboard/model-catalog'),
+    sessionCandidates: () => get<SessionCandidate[]>('/dsh-taskboard/sessions/candidates'),
+    sessionLinks: () => get<SessionLinkRow[]>('/dsh-taskboard/sessions/links'),
+    importSessions: picks => post<SessionImportResult>('/dsh-taskboard/sessions/import', { picks }),
     stream(onChange, onGap) {
       const es = new EventSource('/dsh-taskboard/events')
       let revision: number | undefined

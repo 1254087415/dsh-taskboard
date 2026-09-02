@@ -77,19 +77,22 @@ function createEntry(controller: BoardController): HTMLButtonElement {
 
 /**
  * Live status counts shown at the right of the entry row:
- * `[todo, in_progress, in_review]` (trashed tasks excluded).
+ * `[backlog, todo, in_progress, in_review]` (trashed tasks excluded).
+ * (0.6.1 本地增强: backlog/待规划 added to the strip.)
  */
-function entryStats(controller: BoardController): [number, number, number] {
+function entryStats(controller: BoardController): [number, number, number, number] {
+  let backlog = 0
   let todo = 0
   let inProgress = 0
   let inReview = 0
   for (const task of controller.getSnapshot().ledger.tasks) {
     if (task.trashedAt !== undefined) continue
-    if (task.status === 'todo') todo++
+    if (task.status === 'backlog') backlog++
+    else if (task.status === 'todo') todo++
     else if (task.status === 'in_progress') inProgress++
     else if (task.status === 'in_review') inReview++
   }
-  return [todo, inProgress, inReview]
+  return [backlog, todo, inProgress, inReview]
 }
 
 /**
@@ -136,18 +139,18 @@ function setRollValue(slot: HTMLElement, value: number): void {
 }
 
 /**
- * Wire the stats strip into the entry: builds the three slots and keeps them
+ * Wire the stats strip into the entry: builds the four slots and keeps them
  * (plus the tooltip) in sync with every controller emit.
  * @returns the update function (also called once immediately).
  */
 function wireStats(entry: HTMLButtonElement, controller: BoardController): () => void {
   const stats = entry.querySelector<HTMLElement>('.dsh-atb-entry-stats')
   if (stats === null) return () => {}
-  // Slot order = [todo, in_progress, in_review]; each slot carries its status
-  // in data-stat so the stylesheet colors the digits (see .dsh-atb-roll).
-  const statKeys = ['todo', 'in_progress', 'in_review'] as const
+  // Slot order = [backlog, todo, in_progress, in_review]; each slot carries
+  // its status in data-stat so the stylesheet colors the digits.
+  const statKeys = ['backlog', 'todo', 'in_progress', 'in_review'] as const
   const slots: HTMLElement[] = []
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     if (i > 0) {
       const sep = document.createElement('span')
       sep.className = 'dsh-atb-entry-sep'
@@ -161,11 +164,12 @@ function wireStats(entry: HTMLButtonElement, controller: BoardController): () =>
     slots.push(slot)
   }
   const update = (): void => {
-    const [todo, inProgress, inReview] = entryStats(controller)
-    setRollValue(slots[0]!, todo)
-    setRollValue(slots[1]!, inProgress)
-    setRollValue(slots[2]!, inReview)
-    stats.title = translate('shared.stats.title', { todo, doing: inProgress, review: inReview })
+    const [backlog, todo, inProgress, inReview] = entryStats(controller)
+    setRollValue(slots[0]!, backlog)
+    setRollValue(slots[1]!, todo)
+    setRollValue(slots[2]!, inProgress)
+    setRollValue(slots[3]!, inReview)
+    stats.title = translate('shared.stats.title', { backlog, todo, doing: inProgress, review: inReview })
   }
   return update
 }

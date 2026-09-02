@@ -238,6 +238,48 @@ export type TaskResponse = TaskRecord
 export type SummaryResponse = { tasks: TaskSummary[] }
 
 // ---------------------------------------------------------------------------
+// Session import (0.6.0 本地增强)
+// ---------------------------------------------------------------------------
+
+/** One retained-session import candidate (GUI dialog row). */
+export type SessionCandidate = {
+  sessionId: string
+  title: string
+  workspaceId: string
+  workspaceTitle: string
+  /** Title carries a task-like verb (修复/排查/实现/部署…). */
+  taskLike: boolean
+}
+
+/** One pick in a session-import request. */
+export type SessionPick = {
+  sessionId: string
+  title: string
+  workspaceId: string
+  urgency?: 'urgent' | 'normal' | 'relaxed'
+}
+
+/** Result of a batch session import (per-pick outcomes). */
+export type SessionImportResult = {
+  created: Array<{ sessionId: string; taskId: string; title: string }>
+  errors: Array<{ sessionId: string; error: string }>
+}
+
+// ---------------------------------------------------------------------------
+// Session → card links (0.6.1 本地增强): reverse lookup for the sidebar jump
+// ---------------------------------------------------------------------------
+
+/** One session→card link row (sessionId → bound tracking card). */
+export type SessionLinkRow = {
+  sessionId: string
+  taskId: string
+  /** Card title (for hover tooltips / diagnostics). */
+  title: string
+  /** Card status at lookup time (for the button title). */
+  status: string
+}
+
+// ---------------------------------------------------------------------------
 // SSE
 // ---------------------------------------------------------------------------
 

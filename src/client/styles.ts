@@ -26,11 +26,22 @@ export const STYLES = `
   font-variant-numeric: tabular-nums; white-space: nowrap; cursor: help;
 }
 .dsh-atb-entry-sep { opacity: .5; }
-/* Each rolling count wears its status color (todo blue | in_progress orange |
-   in_review purple); the separators stay in the strip's neutral gray. */
+/* Each rolling count wears its status color (backlog gray | todo blue |
+   in_progress orange | in_review purple); separators stay in strip gray. */
+.dsh-atb-roll[data-stat="backlog"] { color: #8a8f98; }
 .dsh-atb-roll[data-stat="todo"] { color: #3e63dd; }
 .dsh-atb-roll[data-stat="in_progress"] { color: #d9822b; }
 .dsh-atb-roll[data-stat="in_review"] { color: #8e4ec6; }
+/* Session→card jump button (0.6.1 本地增强): small card icon at the session
+   row's right; the row's own hover/active colors keep working underneath. */
+.dsh-atb-sesslink {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin: 0 2px 0 4px; padding: 0; border: none;
+  border-radius: 5px; background: transparent; color: var(--dsw-text-secondary, gray);
+  cursor: pointer; opacity: .55; transition: opacity .12s ease;
+}
+.dsh-atb-sesslink:hover { opacity: 1; background: var(--dsw-hover, rgba(128,128,128,.12)); color: var(--dsw-text-primary, inherit); }
+.dsh-atb-sesslink svg { flex: none; }
 /* One rolling number: fixed one-line window, overflow hidden. */
 .dsh-atb-roll {
   position: relative; display: inline-block; overflow: hidden;

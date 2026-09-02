@@ -20,7 +20,7 @@ export const zh = {
   'shared.current': '（当前：{name}）',
   'shared.entry.aria': 'Agent 任务看板',
   'shared.entry.label': '任务看板',
-  'shared.stats.title': '待办 {todo} ｜ 进行中 {doing} ｜ 待验收 {review}（待办|进行中|待验收）',
+  'shared.stats.title': '待规划 {backlog} ｜ 待办 {todo} ｜ 进行中 {doing} ｜ 待验收 {review}（待规划|待办|进行中|待验收）',
   'shared.duplicate.suffix': '（副本）',
 
   // ── status / urgency / outcome enums (labels.ts) ──────────────────

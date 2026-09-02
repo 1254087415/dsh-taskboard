@@ -17,6 +17,7 @@ import { TaskDetail } from './TaskDetail.tsx'
 import { TaskFormModal } from './TaskFormModal.tsx'
 import { SettingsModal } from './SettingsModal.tsx'
 import { ImportModal } from './ImportModal.tsx'
+import { SessionImportModal } from './SessionImportModal.tsx'
 import { TemplateManager } from './TemplateManager.tsx'
 import { useAlert } from './AlertModal.tsx'
 
@@ -152,6 +153,7 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
         <button type="button" className="dsh-atb-btn" title={t('board.action.settingsTitle')} onClick={() => controller.openSettings()}>{t('board.action.settings')}</button>
         <button type="button" className="dsh-atb-btn" title={t('board.action.diagTitle')} onClick={() => controller.openDiagnostics()}>{t('board.action.diag')}</button>
         <button type="button" className="dsh-atb-btn" title={t('board.action.importTitle')} onClick={() => controller.openImport()}>{t('board.action.import')}</button>
+        <button type="button" className="dsh-atb-btn" title="把留存会话导入为看板任务（排除归档/子 agent/闲聊）" onClick={() => controller.openSessionImport()}>📥 导入会话</button>
         <div className="dsh-atb-newmenu">
           <button
             type="button"
@@ -273,6 +275,8 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
       {state.settingsOpen && <SettingsModal controller={controller} />}
 
       {state.importOpen && <ImportModal controller={controller} />}
+
+      {state.sessionImportOpen && <SessionImportModal controller={controller} />}
 
       {state.tplManagerOpen && <TemplateManager controller={controller} />}
 
