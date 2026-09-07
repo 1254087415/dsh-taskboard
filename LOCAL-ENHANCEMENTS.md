@@ -1,6 +1,6 @@
 # 本地增强说明（本 fork 相对上游的差异）
 
-> 本仓库 fork 自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard)，在**上游 v0.6.2 基准**上重放了本机（1254087415）的本地独有增强。上游 `main` 更新时通过 `git fetch upstream && git merge upstream/main` 合并，冲突在本仓库解决。
+> 本仓库 fork 自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard)，在**上游 v0.6.2 基准**上重放了本机（1254087415）的本地独有增强，并于 2026-09-07 合并 **upstream/main（v0.6.3 并列多仓库 worktree 镜像 + v0.6.4 i18n 迟挂载修复）** 至 v0.6.4。上游 `main` 更新时通过 `git fetch upstream && git merge upstream/main` 合并，冲突在本仓库解决。
 > 完整记录见本机 `~/Documents/project/docs/dsh-taskboard-本地增强记录.md` 第 5 节。
 
 ## 独有增强清单（commit 6d71378 起）
