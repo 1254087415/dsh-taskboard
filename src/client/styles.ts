@@ -80,6 +80,15 @@ html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column;
 
 .dsh-atb-board { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 12px 16px; gap: 10px; box-sizing: border-box; }
 .dsh-atb-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 0.6.5 / #19: dsh-better-sidebar 钉在视口右上角的常驻按钮簇（2×28px + 4px
+ * gap，right:10px → 占视口右边 10~70px）。它对 DSH 原生会话头的避让契约是
+ * body[data-dsh-sidebar-collapsed] 下给 header padding-right:78px（其
+ * layout.css）；看板隐藏该会话头并占据同一条顶带，工具条右端便沉到簇下面。
+ * 镜像避让：面板收起（body 属性存在）且看板激活时，工具条右侧预留
+ * 70px 足迹 + 8px 间隙 − 16px（.dsh-atb-board 自身 padding）= 62px；
+ * padding 作用于容器所有换行行，配合 flex-wrap，任何宽度都不进簇区。
+ * 未装 better-sidebar 或面板展开时属性不存在，规则零生效。 */
+html[data-dsh-atb-active] body[data-dsh-sidebar-collapsed] .dsh-atb-toolbar { padding-right: 62px; }
 .dsh-atb-title { font-size: 15px; font-weight: 600; margin: 0; }
 .dsh-atb-count { font-size: 12px; color: var(--dsw-text-secondary, gray); }
 .dsh-atb-ver {

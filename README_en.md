@@ -210,6 +210,9 @@ No. That is a code-level protocol gate (not a prompt convention): `taskboard_mov
 **GitHub-source install blocked at prepare?**
 That's pnpm build authorization — add the key printed in the error to `allowBuilds` in the profile's `pnpm-workspace.yaml` and retry; or install from npm instead (prebuilt, no such step).
 
+**Board toolbar's right-side buttons covered when dsh-better-sidebar is installed?**
+Fixed since 0.6.5 with automatic yielding: while better-sidebar's right panel is collapsed, its persistent corner cluster ("expand bottom panel" / "expand sidebar") occupies the top-right 10-70px of the viewport; the active board now reserves that strip on the toolbar's right side (mirroring better-sidebar's own yield contract for DSH's native session header), so they never overlap at any window width. No effect when better-sidebar is absent or its panel is open ([#19](https://github.com/cloader/dsh-taskboard/issues/19)).
+
 ## Development
 
 ```bash
@@ -222,6 +225,10 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
+
+### 0.6.5
+
+- **Fix: the board toolbar's right-side controls overlapped by dsh-better-sidebar's persistent corner toggle cluster ([#19](https://github.com/cloader/dsh-taskboard/issues/19))**: while the board is active and better-sidebar's right panel is collapsed, the toolbar reserves 62px on its right, yielding the viewport's top-right corner (10-70px) that the cluster ("expand bottom panel" / "expand sidebar") pins — applied to every wrapped row, so no overlap at any window width; the selector never matches when better-sidebar is absent or its panel is open. Pure-CSS fix
 
 ### 0.6.4
 

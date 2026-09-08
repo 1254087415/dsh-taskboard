@@ -1,5 +1,13 @@
 # 更新日志 / Changelog
 
+### 0.6.5
+
+- **修复：与 dsh-better-sidebar 并存时看板顶栏右侧按钮被其右上角常驻按钮簇遮挡（[#19](https://github.com/cloader/dsh-taskboard/issues/19)，@heptaspirit 报告）**：better-sidebar 在视口右上角钉有「展开底部面板 / 展开侧边栏」常驻按钮簇（z-index 45 浮层，占视口右边 10~70px、纵向与中栏顶带重合），它对 DSH 原生会话头的避让契约（右栏收起时 header `padding-right:78px`）在看板激活时失效——看板隐藏了该会话头并把自己的工具条放进同一条顶带，右端控件（筛选 chip、设置/诊断/导入导出、版本号）沉到按钮簇下面，窗口越窄挤进角落的控件越多。修复：镜像 better-sidebar 自己的避让契约——看板激活且其右栏收起（`body[data-dsh-sidebar-collapsed]`）时，工具条右侧预留 62px（70px 簇足迹 + 8px 间隙 − 16px 看板自身 padding），作用于全部换行行，任何窗口宽度下工具条内容都不再进入簇区；未安装 better-sidebar 或其右栏展开时规则零生效，纯 CSS 无 JS 开销
+
+**English:**
+
+- **Fix: the board toolbar's right-side controls overlapped by dsh-better-sidebar's persistent corner toggle cluster ([#19](https://github.com/cloader/dsh-taskboard/issues/19), reported by @heptaspirit)**: better-sidebar pins its "expand bottom panel / expand sidebar" cluster at the viewport's top-right corner (a z-index 45 overlay spanning 10-70px from the right edge, vertically coinciding with the center column's top band); its yield contract for DSH's own session header (`padding-right: 78px` while the right panel is collapsed) goes moot when the board is active — the board hides that header and puts its toolbar into the same top band, whose right end (filter chips, settings/diagnostics/import-export, the version pill) sinks beneath the cluster, worsening as the window narrows. Fix: mirror better-sidebar's own yield contract — while the board is active AND its right panel is collapsed (`body[data-dsh-sidebar-collapsed]`), the toolbar reserves 62px on its right (70px cluster footprint + 8px gap − 16px board padding), applied to every wrapped row so no toolbar content enters the cluster zone at any window width; with better-sidebar absent or its panel open the selector never matches — pure CSS, zero JS cost
+
 ### 0.6.4
 
 - **修复：client 激活早于 locale 服务时界面语言被永久定型为英文（[#16](https://github.com/cloader/dsh-taskboard/issues/16)，@imroc 报告并验证方案）**：taskboard client 零依赖、先于 `dsh-client-locale` 激活，`initI18n` 拿不到服务时的一次性回退检测撞上服务端渲染的静态 `<html lang="en">`，此后无重试。修复：无服务分支增加「迟挂载」——MutationObserver 监听 `<html lang>` 变化即时重新检测发布（locale 运行时激活同步 lang 后立即跟随），并以 250ms×8 轮询重试 `ctx.get('locale')`、服务出现即正常订阅接管；dispose 全量拆除

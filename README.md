@@ -210,6 +210,9 @@ agent：
 **GitHub 源安装报 prepare 被阻止？**
 pnpm 的构建授权——按报错把 key 加进 profile 的 `pnpm-workspace.yaml` `allowBuilds` 后重跑；或改用 npm 源（预构建，无此步骤）。
 
+**和 dsh-better-sidebar 并存，看板顶栏右侧按钮被遮住？**
+0.6.5 起已自动避让：better-sidebar 收起时其右上角常驻按钮簇（展开底部面板 / 展开侧边栏）占据视口右上 10~70px，看板激活时会为工具条右侧预留这块区域（镜像 better-sidebar 对 DSH 原生会话头的避让契约），任何窗口宽度都不再重叠；未安装 better-sidebar 或其侧栏展开时无任何影响（[#19](https://github.com/cloader/dsh-taskboard/issues/19)）。
+
 ## 开发
 
 ```bash
@@ -222,6 +225,10 @@ node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 ```
 
 ## 升级日志
+
+### 0.6.5
+
+- **修复：与 dsh-better-sidebar 并存时看板顶栏右侧按钮被其右上角常驻按钮簇遮挡（[#19](https://github.com/cloader/dsh-taskboard/issues/19)）**：看板激活且 better-sidebar 右栏收起时，工具条右侧预留 62px 让出其「展开底部面板 / 展开侧边栏」按钮簇所占的视口右上角（10~70px），作用于全部换行行，任何窗口宽度不再重叠；未装 better-sidebar 或其右栏展开时规则零生效，纯 CSS 修复
 
 ### 0.6.4
 
