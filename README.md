@@ -213,18 +213,30 @@ pnpm 的构建授权——按报错把 key 加进 profile 的 `pnpm-workspace.ya
 **和 dsh-better-sidebar 并存，看板顶栏右侧按钮被遮住？**
 0.6.5 起已自动避让：better-sidebar 收起时其右上角常驻按钮簇（展开底部面板 / 展开侧边栏）占据视口右上 10~70px，看板激活时会为工具条右侧预留这块区域（镜像 better-sidebar 对 DSH 原生会话头的避让契约），任何窗口宽度都不再重叠；未安装 better-sidebar 或其侧栏展开时无任何影响（[#19](https://github.com/cloader/dsh-taskboard/issues/19)）。
 
+**Windows 版 DSH Desktop 的窗口按钮与看板顶栏重叠？**
+0.6.6 的修复会根据看板距窗口顶部的实际位置，为原生窗口控制按钮预留顶部空间；已有独立标题栏时保持原间距，窗口缩放和布局变化时重新计算。该问题已通过 Windows 实机验收（[#20 评论](https://github.com/cloader/dsh-taskboard/issues/20#issuecomment-5597498727)）。
+
+**编辑任务时 DoD 勾选框占位过多，把文本输入框挤出去？**
+0.6.6 已将 checkbox 排除在弹窗的整行输入框样式之外，恢复勾选框的 15px 宽度及文本输入区域（[#20](https://github.com/cloader/dsh-taskboard/issues/20)）。
+
 ## 开发
 
 ```bash
 git clone https://github.com/cloader/dsh-taskboard.git
 cd dsh-taskboard
 npm install && npm run build    # host ESM + client CJS 双构建
-npm test                        # vitest 全量（266 项，含真实 git 镜像集成测试）
+npm test                        # vitest 全量（含真实 git 镜像集成测试）
 node tests/manual-git-e2e.mjs   # 真 git 端到端手测（worktree 全链路 + 续跑 + diff 查看器）
 node scripts/screenshot.mjs     # 重新生成 img/ 截图（需本机 Edge）
 ```
 
 ## 升级日志
+
+### 0.6.6
+
+- **修复 DoD 编辑行布局（[#20](https://github.com/cloader/dsh-taskboard/issues/20)）**：checkbox 不再套用整行输入框的宽度、内边距和边框样式，避免文本输入框被挤出。
+- **修复 Windows DSH Desktop 窗口按钮与看板顶栏重叠（[#20 评论](https://github.com/cloader/dsh-taskboard/issues/20#issuecomment-5597498727)）**：根据看板实际位置动态预留顶部空间，兼顾工具条换行和已有独立标题栏的布局；普通 Web 与 macOS 不启用此避让。已通过 Windows 实机验收。
+- **修复 agent 无法取得 DoD 条目 id（[PR #21](https://github.com/cloader/dsh-taskboard/pull/21)）**：`taskboard_get` 的验收清单文本现在逐项输出序号和 `id`，agent 可直接将其作为 `taskboard_checklist check/uncheck` 的 `itemId`，无需猜测；不改变数据模型或账本。
 
 ### 0.6.5
 
