@@ -1,3 +1,5 @@
+import type { SessionArchiveResult } from '../shared/api.ts'
+import { archiveTaskSessions } from './archive-sessions.ts'
 /**
  * The ten `taskboard_*` agent tools. All writes require a calling agent
  * session (ownership audit), carry optimistic-version checks, and enforce
@@ -162,6 +164,8 @@ export interface WorkspaceFace {
   get(id: string): { id: string; path: string; title: string } | undefined
   /** List all workspaces. */
   list(): Array<{ id: string; path: string; title: string }>
+  /** Archive one session durably (when supported by runtime workspaceRegistry). */
+  archiveSession?(sessionId: string): Promise<void>
 }
 
 /** Adapt the real registry to the narrow face. */
@@ -178,6 +182,9 @@ export function workspaceFace(registry: WorkspaceRegistry): WorkspaceFace {
       return ws === undefined ? undefined : { id: ws.id, path: ws.path, title: ws.title }
     },
     list: () => registry.list().map(ws => ({ id: ws.id, path: ws.path, title: ws.title })),
+    ...(typeof registry.archiveSession === 'function'
+      ? { archiveSession: (sessionId: string) => registry.archiveSession(sessionId as Parameters<WorkspaceRegistry['archiveSession']>[0]) }
+      : {}),
   }
 }
 
@@ -411,7 +418,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     output: {
       schema: JSON_OUT,
       render: (_args, value) => {
-        const v = value as { task?: { id?: string; status?: string; version?: number } }
+        const v = value as { task?: { id?: string; status?: string; version?: number }; sessionArchive?: SessionArchiveResult }
         const t = v.task
         return [{ type: 'text', text: t === undefined ? '创建失败。' : `已创建任务 ${t.id} [${t.status}] v${t.version}。写入前先 taskboard_get 读取。` }]
       },
@@ -501,7 +508,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     output: {
       schema: JSON_OUT,
       render: (_args, value) => {
-        const v = value as { task?: { id?: string; status?: string; version?: number } }
+        const v = value as { task?: { id?: string; status?: string; version?: number }; sessionArchive?: SessionArchiveResult }
         const t = v.task
         return [{ type: 'text', text: t === undefined ? '更新失败。' : `已更新任务 ${t.id}，当前 v${t.version} [${t.status}]。` }]
       },
@@ -554,16 +561,17 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       id: { type: 'string', required: true, description: 'Task id.' },
       status: { type: 'string', required: true, description: 'Target status.' },
       ifVersion: { type: 'number', required: true, description: 'Task version you read; fails on mismatch.' },
+      archiveSessions: { type: 'boolean', description: 'When moving to archived: whether to archive associated execution sessions as well. Defaults to false.' },
     },
     output: {
       schema: JSON_OUT,
       render: (_args, value) => {
-        const v = value as { task?: { id?: string; status?: string; version?: number } }
+        const v = value as { task?: { id?: string; status?: string; version?: number }; sessionArchive?: SessionArchiveResult }
         const t = v.task
-        return [{ type: 'text', text: t === undefined ? '移动失败。' : `任务 ${t.id} 已移到 ${t.status}，当前 v${t.version}。` }]
+        return [{ type: 'text', text: t === undefined ? '移动失败。' : `任务 ${t.id} 已移到 ${t.status}，当前 v${t.version}。${v.sessionArchive === undefined ? '' : ` 会话归档结果：${JSON.stringify(v.sessionArchive)}`}` }]
       },
     },
-    async execute(args: { id: string; status: string; ifVersion: number }, exec: unknown) {
+    async execute(args: { id: string; status: string; ifVersion: number; archiveSessions?: boolean }, exec: unknown) {
       try {
         const { actor } = caller(exec as ToolRunContext)
         const to = asStatus(args.status)
@@ -575,9 +583,11 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           : undefined
         // R1: every state guard + the write itself run inside the mutation.
         let next: TaskRecord | undefined
+        let beforeTask: TaskRecord | undefined
         await store.mutate('task-moved', ledger => {
           const { index, task } = liveTaskAt(ledger, args.id)
           versionGuard(task, args.ifVersion)
+          beforeTask = task
 
           // Code-level gate: agents never complete a task.
           if (to === 'done') {
@@ -607,7 +617,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           ledger.tasks[index] = next
           return [next]
         })
-        return json({ task: summarize(next!) })
+        const sessionArchive = to === 'archived' && args.archiveSessions === true
+          ? await archiveTaskSessions(beforeTask ?? next!, deps.workspaces.archiveSession)
+          : undefined
+        return json({ task: summarize(next!), ...(sessionArchive !== undefined ? { sessionArchive } : {}) })
       } catch (error) { fail(error) }
     },
   })) as () => void)
