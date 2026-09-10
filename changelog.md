@@ -6,11 +6,14 @@
 - 归档卡片时可选择同时归档执行会话，确认前显示会话 ID；默认仅归档卡片，不包含创建会话或认领会话。归档失败会显示逐会话结果，已归档卡片可独立重试；宿主不支持时禁用会话归档选项（[#23](https://github.com/cloader/dsh-taskboard/pull/23)）。
 - 修正调度器生命周期测试的异步等待条件，避免台账尚未加载时提前断言。
 
+- 修复模板 Prompt 从第二行开始多出缩进：客户端包装脚本原样保留打包代码，避免给多行字符串插入 Tab。
+
 **English:**
 
 - Built-in task templates and system comments follow the GUI language; JSON backup imports preserve localized comment metadata ([#22](https://github.com/cloader/dsh-taskboard/pull/22)).
 - Optionally archive execution sessions when archiving a card, with session IDs shown before confirmation. Card-only remains the default; creator and claim sessions are excluded. Per-session failures are reported and archived cards support independent retries. Unsupported hosts disable the session archive option ([#23](https://github.com/cloader/dsh-taskboard/pull/23)).
 - Fix the scheduler lifecycle test's completion predicate so an unloaded ledger cannot satisfy the wait prematurely.
+- Fix extra indentation after the first line of template prompts: preserve the bundled client code verbatim instead of injecting tabs into multiline strings.
 
 ### 0.6.6
 

@@ -237,6 +237,7 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 - Built-in task templates and system comments follow the GUI language; JSON backup imports preserve localized comment metadata ([#22](https://github.com/cloader/dsh-taskboard/pull/22)).
 - Optionally archive execution sessions when archiving a card, with session IDs shown before confirmation. Card-only remains the default; creator and claim sessions are excluded. Per-session failures are reported and archived cards support independent retries. Unsupported hosts disable the session archive option ([#23](https://github.com/cloader/dsh-taskboard/pull/23)).
 - Fix the scheduler lifecycle test's completion predicate so an unloaded ledger cannot satisfy the wait prematurely.
+- Fix extra indentation after the first line of template prompts: preserve the bundled client code verbatim instead of injecting tabs into multiline strings.
 
 ### 0.6.6
 
