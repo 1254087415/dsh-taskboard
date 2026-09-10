@@ -232,6 +232,12 @@ node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 
 ## Changelog
 
+### 0.6.7
+
+- Built-in task templates and system comments follow the GUI language; JSON backup imports preserve localized comment metadata ([#22](https://github.com/cloader/dsh-taskboard/pull/22)).
+- Optionally archive execution sessions when archiving a card, with session IDs shown before confirmation. Card-only remains the default; creator and claim sessions are excluded. Per-session failures are reported and archived cards support independent retries. Unsupported hosts disable the session archive option ([#23](https://github.com/cloader/dsh-taskboard/pull/23)).
+- Fix the scheduler lifecycle test's completion predicate so an unloaded ledger cannot satisfy the wait prematurely.
+
 ### 0.6.6
 
 - **Fix DoD editor row layout ([#20](https://github.com/cloader/dsh-taskboard/issues/20))**: checkboxes no longer receive the full-width text input's width, padding, and border styles, preventing the text input from being pushed out.

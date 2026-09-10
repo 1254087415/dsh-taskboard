@@ -1,5 +1,17 @@
 # 更新日志 / Changelog
 
+### 0.6.7
+
+- 内置任务模板及系统评论跟随界面语言显示；JSON 备份导入保留系统评论的本地化信息（[#22](https://github.com/cloader/dsh-taskboard/pull/22)）。
+- 归档卡片时可选择同时归档执行会话，确认前显示会话 ID；默认仅归档卡片，不包含创建会话或认领会话。归档失败会显示逐会话结果，已归档卡片可独立重试；宿主不支持时禁用会话归档选项（[#23](https://github.com/cloader/dsh-taskboard/pull/23)）。
+- 修正调度器生命周期测试的异步等待条件，避免台账尚未加载时提前断言。
+
+**English:**
+
+- Built-in task templates and system comments follow the GUI language; JSON backup imports preserve localized comment metadata ([#22](https://github.com/cloader/dsh-taskboard/pull/22)).
+- Optionally archive execution sessions when archiving a card, with session IDs shown before confirmation. Card-only remains the default; creator and claim sessions are excluded. Per-session failures are reported and archived cards support independent retries. Unsupported hosts disable the session archive option ([#23](https://github.com/cloader/dsh-taskboard/pull/23)).
+- Fix the scheduler lifecycle test's completion predicate so an unloaded ledger cannot satisfy the wait prematurely.
+
 ### 0.6.6
 
 - **修复：编辑任务时 DoD checkbox 占满一行、文本输入框被挤出（[#20](https://github.com/cloader/dsh-taskboard/issues/20)）**：弹窗的通用输入框样式及焦点样式排除 checkbox，避免优先级更高的 `width: 100%` 和文本输入框装饰覆盖勾选框的 15px 布局。
