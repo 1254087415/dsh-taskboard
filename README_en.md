@@ -210,18 +210,44 @@ No. That is a code-level protocol gate (not a prompt convention): `taskboard_mov
 **GitHub-source install blocked at prepare?**
 That's pnpm build authorization — add the key printed in the error to `allowBuilds` in the profile's `pnpm-workspace.yaml` and retry; or install from npm instead (prebuilt, no such step).
 
+**Board toolbar's right-side buttons covered when dsh-better-sidebar is installed?**
+Fixed since 0.6.5 with automatic yielding: while better-sidebar's right panel is collapsed, its persistent corner cluster ("expand bottom panel" / "expand sidebar") occupies the top-right 10-70px of the viewport; the active board now reserves that strip on the toolbar's right side (mirroring better-sidebar's own yield contract for DSH's native session header), so they never overlap at any window width. No effect when better-sidebar is absent or its panel is open ([#19](https://github.com/cloader/dsh-taskboard/issues/19)).
+
+**Windows DSH Desktop caption controls overlap the board toolbar?**
+The 0.6.6 fix reserves space below the native caption controls based on the board's actual position in the viewport. Layouts with a separate titlebar keep their normal spacing; window resizing and layout changes trigger recalculation. Verified on Windows Desktop ([#20 comment](https://github.com/cloader/dsh-taskboard/issues/20#issuecomment-5597498727)).
+
+**DoD checkboxes take up the edit row and push the text input out?**
+0.6.6 excludes checkboxes from the modal's full-width input styles, restoring the checkbox's 15px width and the text input area ([#20](https://github.com/cloader/dsh-taskboard/issues/20)).
+
 ## Development
 
 ```bash
 git clone https://github.com/cloader/dsh-taskboard.git
 cd dsh-taskboard
 npm install && npm run build    # dual build: host ESM + client CJS
-npm test                        # full vitest suite (266 cases, incl. the real-git mirror integration spec)
+npm test                        # full vitest suite (including real-git mirror integration tests)
 node tests/manual-git-e2e.mjs   # real-git end-to-end manual test (full worktree chain + resume + diff viewer)
 node scripts/screenshot.mjs     # regenerate img/ screenshots (needs local Edge)
 ```
 
 ## Changelog
+
+### 0.6.7
+
+- Built-in task templates and system comments follow the GUI language; JSON backup imports preserve localized comment metadata ([#22](https://github.com/cloader/dsh-taskboard/pull/22)).
+- Optionally archive execution sessions when archiving a card, with session IDs shown before confirmation. Card-only remains the default; creator and claim sessions are excluded. Per-session failures are reported and archived cards support independent retries. Unsupported hosts disable the session archive option ([#23](https://github.com/cloader/dsh-taskboard/pull/23)).
+- Fix the scheduler lifecycle test's completion predicate so an unloaded ledger cannot satisfy the wait prematurely.
+- Fix extra indentation after the first line of template prompts: preserve the bundled client code verbatim instead of injecting tabs into multiline strings.
+
+### 0.6.6
+
+- **Fix DoD editor row layout ([#20](https://github.com/cloader/dsh-taskboard/issues/20))**: checkboxes no longer receive the full-width text input's width, padding, and border styles, preventing the text input from being pushed out.
+- **Fix Windows DSH Desktop caption controls overlapping the board toolbar ([#20 comment](https://github.com/cloader/dsh-taskboard/issues/20#issuecomment-5597498727))**: reserve top space based on the board's actual position, including wrapped toolbars and layouts with a separate titlebar. Ordinary Web and macOS views do not enable this adjustment. Verified on Windows Desktop.
+- **Fix missing DoD item ids in agent output ([PR #21](https://github.com/cloader/dsh-taskboard/pull/21))**: `taskboard_get` now renders each checklist item's position and `id`, which an agent can use directly as the `itemId` for `taskboard_checklist check/uncheck` without guessing. No data model or ledger changes.
+
+### 0.6.5
+
+- **Fix: the board toolbar's right-side controls overlapped by dsh-better-sidebar's persistent corner toggle cluster ([#19](https://github.com/cloader/dsh-taskboard/issues/19))**: while the board is active and better-sidebar's right panel is collapsed, the toolbar reserves 62px on its right, yielding the viewport's top-right corner (10-70px) that the cluster ("expand bottom panel" / "expand sidebar") pins — applied to every wrapped row, so no overlap at any window width; the selector never matches when better-sidebar is absent or its panel is open. Pure-CSS fix
 
 ### 0.6.4
 

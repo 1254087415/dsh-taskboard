@@ -90,7 +90,24 @@ html[data-dsh-atb-active] .dshDesktopConversationSurface > *:not([data-dsh-atb-v
 html[data-dsh-atb-active] .dsh-atb-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 
 .dsh-atb-board { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 12px 16px; gap: 10px; box-sizing: border-box; }
+/* #20: native Windows caption controls overlay older Desktop content. Reserve
+ * their vertical band, including wrapped toolbar rows. New Desktop layouts
+ * already start below it: subtract the actual view top to avoid double insets.
+ * Electron exposes titlebar-area env values; 36px covers the Desktop frame
+ * when that API is unavailable. Ordinary Web/macOS views never match. */
+.dsh-atb-view[data-dsh-atb-windows] > .dsh-atb-board {
+  padding-top: max(12px, calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px) + 8px - var(--dsh-atb-viewport-top, 0px)));
+}
 .dsh-atb-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 0.6.5 / #19: dsh-better-sidebar 钉在视口右上角的常驻按钮簇（2×28px + 4px
+ * gap，right:10px → 占视口右边 10~70px）。它对 DSH 原生会话头的避让契约是
+ * body[data-dsh-sidebar-collapsed] 下给 header padding-right:78px（其
+ * layout.css）；看板隐藏该会话头并占据同一条顶带，工具条右端便沉到簇下面。
+ * 镜像避让：面板收起（body 属性存在）且看板激活时，工具条右侧预留
+ * 70px 足迹 + 8px 间隙 − 16px（.dsh-atb-board 自身 padding）= 62px；
+ * padding 作用于容器所有换行行，配合 flex-wrap，任何宽度都不进簇区。
+ * 未装 better-sidebar 或面板展开时属性不存在，规则零生效。 */
+html[data-dsh-atb-active] body[data-dsh-sidebar-collapsed] .dsh-atb-toolbar { padding-right: 62px; }
 .dsh-atb-title { font-size: 15px; font-weight: 600; margin: 0; }
 .dsh-atb-count { font-size: 12px; color: var(--dsw-text-secondary, gray); }
 .dsh-atb-ver {
@@ -359,7 +376,7 @@ button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
 .dsh-atb-movebtn[data-to="canceled"], .dsh-atb-movebtn[data-to="archived"] { opacity: .75; }
 .dsh-atb-movebtn[data-to="blocked"] { border-color: rgba(229,72,77,.45); }
 .dsh-atb-movebtn[data-to="blocked"]:hover { background: rgba(229,72,77,.1); }
-.dsh-atb-confirm { display: inline-flex; align-items: center; gap: 6px; }
+.dsh-atb-confirm { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .dsh-atb-confirm-label { font-size: 11.5px; color: var(--dsw-text-secondary, gray); }
 
 .dsh-atb-section { font-size: 13px; display: flex; flex-direction: column; gap: 7px; }
@@ -540,7 +557,10 @@ button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
   color: var(--dsw-alias-label-secondary, gray);
 }
 .dsh-atb-req { color: var(--dsw-alias-state-error-primary, #e5484d); font-style: normal; }
-.dsh-atb-modal-body input, .dsh-atb-modal-body textarea, .dsh-atb-modal-body select {
+/* Checkbox 排除：整行宽输入样式（width:100% + padding/border）特异性 (0,1,1) 高于
+   .dsh-atb-cke-box (0,1,0)，曾把编辑表单清单行的勾选框拉满整行（勾选框画在行
+   中央）、文本框挤扁。清单勾选框保持原生外观与 15px 布局。 */
+.dsh-atb-modal-body input:not([type="checkbox"]), .dsh-atb-modal-body textarea, .dsh-atb-modal-body select {
   font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px;
   width: 100%; box-sizing: border-box;
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35));
@@ -548,7 +568,7 @@ button.dsh-atb-chip2.dsh-atb-chip-btn:hover {
   transition: border-color .12s ease, box-shadow .12s ease;
 }
 .dsh-atb-modal-body textarea { min-height: 64px; resize: vertical; }
-.dsh-atb-modal-body input:focus, .dsh-atb-modal-body textarea:focus, .dsh-atb-modal-body select:focus {
+.dsh-atb-modal-body input:not([type="checkbox"]):focus, .dsh-atb-modal-body textarea:focus, .dsh-atb-modal-body select:focus {
   outline: none; border-color: var(--dsw-alias-brand-primary, #1f2328);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #1f2328) 18%, transparent);
 }

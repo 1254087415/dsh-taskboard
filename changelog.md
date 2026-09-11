@@ -1,13 +1,47 @@
 # 更新日志 / Changelog
 
-### 0.6.5（未发布）
+### 0.6.7
 
-- **补全卡 → 会话反向跳转（0.6.2 本地增强的方向性遗漏）**：主会话自动跟踪卡（无执行记录、无 session 认领者）此前在 GUI 卡上没有任何会话标识/跳转，只有「会话 → 卡」单向入口。现 `controller.refresh()` 并行拉 `/sessions/links` 构建 `sessionByTask`（taskId→sessionId）随 ledger 快照下发，`TaskCard`/`TaskDetail` 的 `targetSessionId` 在 executions/claimedBy 之后追加反向链接兜底——跟踪卡也能一键跳回来源会话。sessionLinks 缺失或路由不可用时静默降级保留旧值，不阻塞 refresh。测试：`tests/client.spec.ts`「tracked-card session button via reverse session links (0.6.2)」
+- **本 fork 增强：补全卡 → 会话反向跳转（0.6.2 本地增强的方向性遗漏）**：主会话自动跟踪卡（无执行记录、无 session 认领者）此前在 GUI 卡上没有任何会话标识/跳转，只有「会话 → 卡」单向入口。现 `controller.refresh()` 并行拉 `/sessions/links` 构建 `sessionByTask`（taskId→sessionId）随 ledger 快照下发，`TaskCard`/`TaskDetail` 的 `targetSessionId` 在 executions/claimedBy 之后追加反向链接兜底——跟踪卡也能一键跳回来源会话。sessionLinks 缺失或路由不可用时静默降级保留旧值，不阻塞 refresh。测试：`tests/client.spec.ts`「tracked-card session button via reverse session links (0.6.2)」
+
+
+- 内置任务模板及系统评论跟随界面语言显示；JSON 备份导入保留系统评论的本地化信息（[#22](https://github.com/cloader/dsh-taskboard/pull/22)）。
+- 归档卡片时可选择同时归档执行会话，确认前显示会话 ID；默认仅归档卡片，不包含创建会话或认领会话。归档失败会显示逐会话结果，已归档卡片可独立重试；宿主不支持时禁用会话归档选项（[#23](https://github.com/cloader/dsh-taskboard/pull/23)）。
+- 修正调度器生命周期测试的异步等待条件，避免台账尚未加载时提前断言。
+
+- 修复模板 Prompt 从第二行开始多出缩进：客户端包装脚本原样保留打包代码，避免给多行字符串插入 Tab。
 
 **English:**
 
-- **Complete the card→session reverse jump (a directional gap in the 0.6.2 local enhancement)**: auto-tracked cards created from a main session (no executions, no session claimer) previously showed no session handle on the GUI card — only the session→card direction existed. `controller.refresh()` now fetches `/sessions/links` in parallel and ships a `sessionByTask` (taskId→sessionId) map in the ledger snapshot; `TaskCard`/`TaskDetail` append that reverse link after the executions/claimedBy sources when deriving `targetSessionId`, so tracked cards get a one-click jump back to their source session. A missing `sessionLinks` method or an unavailable route degrades silently (previous map kept) and never blocks the refresh. Test: `tests/client.spec.ts` "tracked-card session button via reverse session links (0.6.2)"
+- **Fork enhancement: complete the card→session reverse jump (a directional gap in the 0.6.2 local enhancement)**: auto-tracked cards created from a main session (no executions, no session claimer) previously showed no session handle on the GUI card — only the session→card direction existed. `controller.refresh()` now fetches `/sessions/links` in parallel and ships a `sessionByTask` (taskId→sessionId) map in the ledger snapshot; `TaskCard`/`TaskDetail` append that reverse link after the executions/claimedBy sources when deriving `targetSessionId`, so tracked cards get a one-click jump back to their source session. A missing `sessionLinks` method or an unavailable route degrades silently (previous map kept) and never blocks the refresh. Test: `tests/client.spec.ts` "tracked-card session button via reverse session links (0.6.2)"
+- Built-in task templates and system comments follow the GUI language; JSON backup imports preserve localized comment metadata ([#22](https://github.com/cloader/dsh-taskboard/pull/22)).
+- Optionally archive execution sessions when archiving a card, with session IDs shown before confirmation. Card-only remains the default; creator and claim sessions are excluded. Per-session failures are reported and archived cards support independent retries. Unsupported hosts disable the session archive option ([#23](https://github.com/cloader/dsh-taskboard/pull/23)).
+- Fix the scheduler lifecycle test's completion predicate so an unloaded ledger cannot satisfy the wait prematurely.
+- Fix extra indentation after the first line of template prompts: preserve the bundled client code verbatim instead of injecting tabs into multiline strings.
 
+### 0.6.6
+
+- **修复：编辑任务时 DoD checkbox 占满一行、文本输入框被挤出（[#20](https://github.com/cloader/dsh-taskboard/issues/20)）**：弹窗的通用输入框样式及焦点样式排除 checkbox，避免优先级更高的 `width: 100%` 和文本输入框装饰覆盖勾选框的 15px 布局。
+- **修复：Windows DSH Desktop 的窗口控制按钮与看板顶栏重叠（[#20 评论](https://github.com/cloader/dsh-taskboard/issues/20#issuecomment-5597498727)）**：识别 Windows Desktop 后，按看板的实际视口位置和标题栏区域高度预留顶部空间；已有独立标题栏时不重复留白，窗口缩放、布局变化及看板重新打开时重新计算，卸载时清理监听。普通 Web 与 macOS 不启用此避让。已通过 Windows 实机验收；浏览器隔离验证覆盖旧布局、独立标题栏及 520px 窄窗口工具条换行。
+- 本版本同时包含已合并的 [PR #21](https://github.com/cloader/dsh-taskboard/pull/21)，具体如下。
+
+- **修复：`taskboard_get`（以及 `taskDetail`）渲染的验收清单缺失每个 DoD 条目 id，导致 agent 无法把 checklist 项地址化给 `taskboard_checklist check/uncheck`**：数据层 `ChecklistItem` 本就带 `id`（`k-<base36>-<base36>`，见 `newChecklistItemId`），但 `taskboard_get` 的文本渲染只打印「☐ 文本 + 勾选人 + 证据」，丢弃了 `item.id`（也无序号）；`taskboard_list` 的 `TaskSummary` 更是只折叠出 `checklist:{done,total}` 进度计数。因此 agent 从两个只读接口的输出都拿不到每个 DOD 项的标识，而 `taskboard_checklist` 的 `check/uncheck` 又强制要求 `itemId`——无只读来源可推导，agent 只能猜测并撞 `not_found`。修复：`taskDetail()` 的验收清单行现在随文本一并输出序号与 `id=${item.id}`，与 `taskboard_checklist` 工具自身的回显格式对齐；agent 读 `taskboard_get` 即可直接拿到每个 DoD 项的 `itemId` 去勾选。新增回归守护测试：断言 `taskboard_get` 渲染逐项携带 checklist 条目 id 与序号。纯渲染修复，不改数据模型/账本/前端
+
+**English:**
+
+- **Fix: DoD checkboxes filled the edit row and pushed out the text input ([#20](https://github.com/cloader/dsh-taskboard/issues/20))**: exclude checkboxes from the modal's generic input and focus styles, preventing the more specific `width: 100%` rule and text-field decorations from overriding the checkbox's 15px layout.
+- **Fix: Windows DSH Desktop caption controls overlapped the board toolbar ([#20 comment](https://github.com/cloader/dsh-taskboard/issues/20#issuecomment-5597498727))**: detect Windows Desktop and reserve top space using the board's viewport position and titlebar area height. Layouts with a separate titlebar keep their normal spacing. Recalculate on window resizing, layout changes, and board reopening; remove listeners on disposal. Ordinary Web and macOS views do not enable this adjustment. Verified on Windows Desktop; isolated browser checks cover the legacy layout, a separate titlebar, and toolbar wrapping at 520px.
+- This version also includes merged [PR #21](https://github.com/cloader/dsh-taskboard/pull/21), detailed below.
+
+- **Fix: `taskboard_get` (via `taskDetail`) rendered the DoD checklist without each item's id, so an agent could never address a checklist item to `taskboard_checklist check/uncheck`**: the data layer `ChecklistItem` already carries an `id` (e.g. `k-<base36>-<base36>` from `newChecklistItemId`), but `taskboard_get`'s text render only printed "☐ text + checker + note", dropping `item.id` (and any position index); `taskboard_list`'s `TaskSummary` collapses to just `checklist:{done,total}`. Reading either read-only interface yielded no identifier for a DOD item, while `taskboard_checklist` `check/uncheck` hard-require an `itemId` — nothing to derive it from, the agent could only guess and hit `not_found`. Fix: each `taskDetail` checklist line now carries its position and `id=${item.id}` (mirroring the `taskboard_checklist` tool's own echo format), so reading `taskboard_get` is enough to reconstruct every DoD item's id and check it off. New regression test asserts the render carries each item id and position. Pure render fix — no model/ledger/frontend change
+
+### 0.6.5
+
+- **修复：与 dsh-better-sidebar 并存时看板顶栏右侧按钮被其右上角常驻按钮簇遮挡（[#19](https://github.com/cloader/dsh-taskboard/issues/19)，@heptaspirit 报告）**：better-sidebar 在视口右上角钉有「展开底部面板 / 展开侧边栏」常驻按钮簇（z-index 45 浮层，占视口右边 10~70px、纵向与中栏顶带重合），它对 DSH 原生会话头的避让契约（右栏收起时 header `padding-right:78px`）在看板激活时失效——看板隐藏了该会话头并把自己的工具条放进同一条顶带，右端控件（筛选 chip、设置/诊断/导入导出、版本号）沉到按钮簇下面，窗口越窄挤进角落的控件越多。修复：镜像 better-sidebar 自己的避让契约——看板激活且其右栏收起（`body[data-dsh-sidebar-collapsed]`）时，工具条右侧预留 62px（70px 簇足迹 + 8px 间隙 − 16px 看板自身 padding），作用于全部换行行，任何窗口宽度下工具条内容都不再进入簇区；未安装 better-sidebar 或其右栏展开时规则零生效，纯 CSS 无 JS 开销
+
+**English:**
+
+- **Fix: the board toolbar's right-side controls overlapped by dsh-better-sidebar's persistent corner toggle cluster ([#19](https://github.com/cloader/dsh-taskboard/issues/19), reported by @heptaspirit)**: better-sidebar pins its "expand bottom panel / expand sidebar" cluster at the viewport's top-right corner (a z-index 45 overlay spanning 10-70px from the right edge, vertically coinciding with the center column's top band); its yield contract for DSH's own session header (`padding-right: 78px` while the right panel is collapsed) goes moot when the board is active — the board hides that header and puts its toolbar into the same top band, whose right end (filter chips, settings/diagnostics/import-export, the version pill) sinks beneath the cluster, worsening as the window narrows. Fix: mirror better-sidebar's own yield contract — while the board is active AND its right panel is collapsed (`body[data-dsh-sidebar-collapsed]`), the toolbar reserves 62px on its right (70px cluster footprint + 8px gap − 16px board padding), applied to every wrapped row so no toolbar content enters the cluster zone at any window width; with better-sidebar absent or its panel open the selector never matches — pure CSS, zero JS cost
 ### 0.6.4
 
 - **修复：client 激活早于 locale 服务时界面语言被永久定型为英文（[#16](https://github.com/cloader/dsh-taskboard/issues/16)，@imroc 报告并验证方案）**：taskboard client 零依赖、先于 `dsh-client-locale` 激活，`initI18n` 拿不到服务时的一次性回退检测撞上服务端渲染的静态 `<html lang="en">`，此后无重试。修复：无服务分支增加「迟挂载」——MutationObserver 监听 `<html lang>` 变化即时重新检测发布（locale 运行时激活同步 lang 后立即跟随），并以 250ms×8 轮询重试 `ctx.get('locale')`、服务出现即正常订阅接管；dispose 全量拆除

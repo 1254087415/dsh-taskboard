@@ -335,6 +335,15 @@ export type Actor =
   | { kind: 'agent'; sessionId: string }
   | { kind: 'system' }
 
+/** Structured row of a multi-repo merge system comment (0.6.4). */
+export type SystemCommentRow = {
+  /** Repo path relative to the workspace ('' = the workspace root repo). */
+  repo: string
+  outcome: 'merged' | 'noop' | 'failed'
+  /** Failure reason (verbatim) when outcome = 'failed'. */
+  error?: string
+}
+
 /** A progress/report comment on a task. */
 export type CommentRecord = {
   id: string
@@ -345,6 +354,16 @@ export type CommentRecord = {
   createdAt: number
   /** The session that wrote this comment; absent for user-written ones. */
   threadId?: string
+  /**
+   * i18n key of a host-generated system message (0.6.4). The GUI localizes it
+   * at render time; `body` stays a zh fallback for agent tools / CSV / raw
+   * JSON views.
+   */
+  systemKey?: string
+  /** Flat {name} interpolation params for the system message. */
+  systemParams?: Record<string, string>
+  /** Structured per-repo rows for the multi-repo merge summary (0.6.4). */
+  systemRows?: SystemCommentRow[]
 }
 
 /** One commit produced by an isolated execution (hash + subject). */
@@ -757,6 +776,36 @@ export function syncClaim(task: TaskRecord, to: TaskStatus, now: number, holder?
 }
 
 /**
+ * Collect unique execution session IDs associated with a task:
+ * - executions with a non-empty `sessionId`
+ * Creator and claim sessions may serve other tasks and are never included.
+ * @param task - the task record to inspect.
+ * @returns an array of distinct session IDs in stable discovery order.
+ */
+export function taskAssociatedSessionIds(task: TaskRecord): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  const push = (raw: unknown) => {
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim()
+      if (trimmed.length > 0 && !seen.has(trimmed)) {
+        seen.add(trimmed)
+        result.push(trimmed)
+      }
+    }
+  }
+
+  if (Array.isArray(task.executions)) {
+    for (const ex of task.executions) {
+      if (ex !== null && typeof ex === 'object') {
+        push((ex as { sessionId?: unknown }).sessionId)
+      }
+    }
+  }
+  return result
+}
+
+/**
  * Validate and normalize a pinned model: `{ provider, model, reasoningEffort? }`,
  * provider and model must be non-empty trimmed strings.
  * @param raw - the raw input.
@@ -1020,6 +1069,21 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
           version: numOr(ce, 'version', 1),
           createdAt: numOr(ce, 'createdAt', now),
           ...(typeof ce.threadId === 'string' ? { threadId: ce.threadId } : {}),
+          ...(typeof ce.systemKey === 'string' && /^sys\.[A-Za-z0-9]+$/.test(ce.systemKey) && ce.systemKey.length <= 100
+            ? {
+                systemKey: ce.systemKey,
+                ...(typeof ce.systemParams === 'object' && ce.systemParams !== null && !Array.isArray(ce.systemParams)
+                  ? { systemParams: Object.fromEntries(Object.entries(ce.systemParams).filter(([key, value]) => key.length <= 100 && typeof value === 'string' && value.length <= 4000).slice(0, 20)) as Record<string, string> }
+                  : {}),
+                ...(Array.isArray(ce.systemRows)
+                  ? { systemRows: ce.systemRows.filter((row): row is SystemCommentRow => typeof row === 'object' && row !== null
+                      && typeof row.repo === 'string' && (row.repo === '' || isValidRelRepoPath(row.repo))
+                      && ['merged', 'noop', 'failed'].includes(row.outcome)
+                      && (row.error === undefined || typeof row.error === 'string'))
+                    .slice(0, MAX_MIRROR_REPOS).map(row => ({ repo: row.repo, outcome: row.outcome, ...(row.error !== undefined ? { error: row.error.slice(0, 4000) } : {}) })) }
+                  : {}),
+              }
+            : {}),
         })
       }
     } else return fail('comments must be an array')

@@ -213,7 +213,7 @@ export class ExternalSessionSyncService {
 
   constructor(private readonly deps: SessionSyncDeps) {
     this.unsubscribe = deps.events.onSessionEvent((sessionId, event, sessionMeta) => {
-      void this.handleSessionEvent(sessionId, event, sessionMeta)
+      return this.handleSessionEvent(sessionId, event, sessionMeta)
     })
 
     const interval = deps.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS
@@ -628,6 +628,8 @@ export class ExternalSessionSyncService {
           task.comments.push({
             id: newCommentId(),
             body: normalizeBody(`[系统] 会话执行异常：${errorMessage.slice(0, 300)}；任务已退回待办。`),
+            systemKey: 'sys.sessionError',
+            systemParams: { error: errorMessage.slice(0, 300) },
             version: 1,
             createdAt: now,
           })
@@ -639,6 +641,7 @@ export class ExternalSessionSyncService {
           task.comments.push({
             id: newCommentId(),
             body: normalizeBody('[系统] 会话执行完毕，已自动进入待验收。'),
+            systemKey: 'sys.sessionDone',
             version: 1,
             createdAt: now,
           })

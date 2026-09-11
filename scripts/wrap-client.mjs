@@ -15,16 +15,15 @@ import { readFileSync, writeFileSync } from 'node:fs'
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 const cjs = readFileSync(new URL('../lib/client.cjs', import.meta.url), 'utf8')
 
+// Preserve the payload byte-for-byte: indenting lines also inserts tabs into
+// multiline template literals emitted by the bundler (including join separators).
 const out = `window.__ModuleLoader__.load({
 \tid: ${JSON.stringify(pkg.name)},
 \tfactory: (require) => {
 \t\tvar module = { exports: {} };
 \t\tvar exports = module.exports;
 \t\tObject.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-${cjs
-  .split('\n')
-  .map(line => (line === '' ? '' : `\t\t${line}`))
-  .join('\n')}
+${cjs}
 \t\treturn module.exports;
 \t}
 });

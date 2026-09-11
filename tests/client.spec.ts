@@ -134,6 +134,20 @@ describe('client half', () => {
     leftover.remove()
   })
 
+  it("toolbar yields the viewport top-right corner to better-sidebar's toggle cluster (#19)", async () => {
+    const { injectStyles } = await import('../src/client/styles.ts')
+    document.getElementById('dsh-taskboard-styles')?.remove()
+    injectStyles()
+    const css = document.getElementById('dsh-taskboard-styles')!.textContent ?? ''
+    // The yield rule mirrors better-sidebar's own contract for DSH's session
+    // header (padding-right 78px from the viewport edge; ours sits inside the
+    // board's 16px padding → 78 − 16 = 62px). It must stay gated on BOTH the
+    // board being active (html attr) and better-sidebar's right panel being
+    // collapsed (body attr), so it never matches on setups without the plugin.
+    expect(css).toContain('html[data-dsh-atb-active] body[data-dsh-sidebar-collapsed] .dsh-atb-toolbar')
+    expect(css).toContain('.dsh-atb-toolbar { padding-right: 62px; }')
+  })
+
   it('sidebar entry places itself once a sidebar pane exists', async () => {
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('EventSource', EventSourceMock as unknown as typeof EventSource)
@@ -181,7 +195,7 @@ describe('client half', () => {
     expect((entry as HTMLElement).dataset.active).toBe('true')
   })
 
-  it('sidebar entry shows todo|in_progress|in_review counts with tooltip', async () => {
+  it('sidebar entry shows backlog|todo|in_progress|in_review counts with tooltip', async () => {
     localStorage.clear()
     const { BoardController } = await import('../src/client/controller.ts')
     const { mountSidebarEntry } = await import('../src/client/sidebar-entry.ts')
@@ -198,7 +212,7 @@ describe('client half', () => {
       mkTask('t-3', 'in_progress'),
       mkTask('t-4', 'in_review'), mkTask('t-5', 'in_review'), mkTask('t-6', 'in_review'),
       mkTask('t-7', 'done'),            // not counted
-      mkTask('t-8', 'backlog'),         // not counted
+      mkTask('t-8', 'backlog'),         // counted in the backlog slot
     ]
     const client = {
       state: async () => ({ schemaVersion: 1, revision: 1, tasks }),
@@ -209,23 +223,25 @@ describe('client half', () => {
     const dispose = mountSidebarEntry(controller)
     disposers.push(dispose)
     controller.start()
-    // Initial mount renders 0|0|0; the refresh then rolls each slot to the
+    // Initial mount renders 0|0|0|0; the refresh then rolls each slot to the
     // live counts. jsdom never fires transitionend, so each slot settles via
     // the 400ms fallback — poll the DOM until the strip reaches its final
     // text (no fixed sleep racing the animation constant).
-    await waitFor(() => document.querySelector<HTMLElement>('.dsh-atb-entry-stats')?.textContent === '2|1|3', 3_000)
+    await waitFor(() => document.querySelector<HTMLElement>('.dsh-atb-entry-stats')?.textContent === '1|2|1|3', 3_000)
 
     const stats = document.querySelector<HTMLElement>('.dsh-atb-entry-stats')
     expect(stats).not.toBeNull()
-    // Slots + separators render as "todo|in_progress|in_review".
-    expect(stats!.textContent).toBe('2|1|3')
+    // Slots + separators render as "backlog|todo|in_progress|in_review".
+    expect(stats!.textContent).toBe('1|2|1|3')
     // Each slot carries its status so the stylesheet colors the digits.
     const rolls = stats!.querySelectorAll<HTMLElement>('.dsh-atb-roll')
-    expect(rolls.length).toBe(3)
-    expect(rolls[0]!.dataset.stat).toBe('todo')
-    expect(rolls[1]!.dataset.stat).toBe('in_progress')
-    expect(rolls[2]!.dataset.stat).toBe('in_review')
+    expect(rolls.length).toBe(4)
+    expect(rolls[0]!.dataset.stat).toBe('backlog')
+    expect(rolls[1]!.dataset.stat).toBe('todo')
+    expect(rolls[2]!.dataset.stat).toBe('in_progress')
+    expect(rolls[3]!.dataset.stat).toBe('in_review')
     // The tooltip explains the meaning and carries the live numbers.
+    expect(stats!.title).toContain('待规划 1')
     expect(stats!.title).toContain('待办 2')
     expect(stats!.title).toContain('进行中 1')
     expect(stats!.title).toContain('待验收 3')
@@ -1050,6 +1066,119 @@ describe('client half', () => {
     doneBtn.click()
     await new Promise(r => setTimeout(r, 10))
     expect(host.querySelector('.dsh-atb-confirm-label')!.textContent).toContain('仍有 1 项清单未勾选')
+
+    root.unmount()
+    host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('detail: archive move with associated session prompts for confirmation and supports archive with session vs card only', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
+
+    const taskWithSession = {
+      id: 't-arch-1', title: '已完成任务', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'done' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 5, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [{
+        id: 'e-1', trigger: 'manual' as const, startedAt: 0, endedAt: 10, outcome: 'succeeded' as const,
+        sessionId: 'session-taskboard-s1234567',
+      }],
+    }
+    const moves: Array<{ id: string; body: Record<string, unknown> }> = []
+    let archiveSupported = true
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [taskWithSession], capabilities: { archiveSessions: archiveSupported } }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      stream: () => () => {},
+      move: async (id: string, body: Record<string, unknown>) => { moves.push({ id, body }); return { ...taskWithSession, ...(body.archiveSessions === true ? { sessionArchive: { archived: [], failed: [{ sessionId: 'session-taskboard-s1234567', error: 'disk failure' }], unsupported: [] } } : {}) } },
+      archiveSessions: async () => ({ archived: ['session-taskboard-s1234567'], failed: [], unsupported: [] }),
+    }
+    const controller = new BoardController(client as never)
+    controller.start()
+    await new Promise(r => setTimeout(r, 10))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskDetail, { task: taskWithSession as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+
+    // 1. Initial state: archive move button is rendered
+    const archBtn = host.querySelector<HTMLButtonElement>('.dsh-atb-movebtn[data-to="archived"]')!
+    expect(archBtn).not.toBeNull()
+
+    // 2. Click archive button: should NOT move directly; instead shows confirm prompt with session ID
+    archBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(moves).toHaveLength(0)
+
+    const confirmLabel = host.querySelector('.dsh-atb-confirm-label')!
+    expect(confirmLabel.textContent).toContain('s1234567')
+
+    const btns = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-confirm .dsh-atb-btn'))
+    const withSessionBtn = btns.find(b => b.textContent === '连同会话归档')!
+    const cardOnlyBtn = btns.find(b => b.textContent!.includes('仅归档卡片') || b.textContent!.includes('Card only'))!
+    const cancelBtn = btns.find(b => b.textContent!.includes('取消') || b.textContent!.includes('Cancel'))!
+
+    expect(withSessionBtn).not.toBeNull()
+    expect(withSessionBtn.dataset.primary).toBeUndefined()
+    expect(host.textContent).toContain('session-taskboard-s1234567')
+    expect(cardOnlyBtn).not.toBeNull()
+    expect(cancelBtn).not.toBeNull()
+
+    // 3. Test cancel button
+    cancelBtn.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(moves).toHaveLength(0)
+    expect(host.querySelector('.dsh-atb-confirm')).toBeNull()
+
+    // 4. Click archive again, then choose "仅归档卡片"
+    const archBtn2 = host.querySelector<HTMLButtonElement>('.dsh-atb-movebtn[data-to="archived"]')!
+    archBtn2.click()
+    await new Promise(r => setTimeout(r, 10))
+
+    const cardOnlyBtn2 = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-confirm .dsh-atb-btn'))
+      .find(b => b.textContent!.includes('仅归档卡片') || b.textContent!.includes('Card only'))!
+    cardOnlyBtn2.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(moves).toEqual([{ id: 't-arch-1', body: { ifVersion: 5, status: 'archived', archiveSessions: false } }])
+
+    // 5. Click archive again, then choose "连同会话归档"
+    moves.length = 0
+    const archBtn3 = host.querySelector<HTMLButtonElement>('.dsh-atb-movebtn[data-to="archived"]')!
+    archBtn3.click()
+    await new Promise(r => setTimeout(r, 10))
+
+    const withSessionBtn3 = Array.from(host.querySelectorAll<HTMLButtonElement>('.dsh-atb-confirm .dsh-atb-btn')).find(b => b.textContent === '连同会话归档')!
+    withSessionBtn3.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(moves).toEqual([{ id: 't-arch-1', body: { ifVersion: 5, status: 'archived', archiveSessions: true } }])
+
+    root.render(React.createElement(TaskDetail, { task: { ...taskWithSession, status: 'archived' } as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+    expect(host.textContent).toContain('disk failure')
+    const retry = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent!.includes('重试归档'))!
+    retry.click()
+    await new Promise(r => setTimeout(r, 10))
+    expect(controller.getSnapshot().sessionArchive?.result.failed).toEqual([])
+    expect(host.textContent).not.toContain('disk failure')
+    expect(moves).toHaveLength(1) // retry never repeats the terminal transition
+
+    archiveSupported = false
+    await controller.refresh()
+    root.render(React.createElement(TaskDetail, { task: taskWithSession as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+    host.querySelector<HTMLButtonElement>('.dsh-atb-movebtn[data-to="archived"]')!.click()
+    await new Promise(r => setTimeout(r, 10))
+    const unsupported = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent === '连同会话归档')!
+    expect(unsupported.disabled).toBe(true)
+    expect(unsupported.title).toContain('不支持')
 
     root.unmount()
     host.remove()

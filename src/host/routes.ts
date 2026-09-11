@@ -1,3 +1,4 @@
+import { archiveTaskSessions } from './archive-sessions.ts'
 /**
  * /dsh-taskboard routes on the shared DSH webserver: a JSON API for the
  * GUI's human operations (create/update/move/comment/delete — actor `user`,
@@ -40,10 +41,12 @@ import {
   type TaskLedger,
   type TaskModel,
   type TaskRecord,
+  type SystemCommentRow,
 } from '../shared/protocol.ts'
 import { WORKTREE_DIR, worktreePathOf, type GitFace } from './git.ts'
 import { removeMirror, repoMainPath } from './isolation.ts'
 import { createRepoScanner, type RepoScanner } from './repos.ts'
+import { activeHostLocale } from './locale.ts'
 import type { CatalogModelItem, CatalogPresetItem, MergeRepoResult, SessionLinkRow, TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
@@ -317,10 +320,15 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
     } catch { /* fail-soft → false */ }
     // gitignore 建议 (plan §3.2): suggest (never write) ignoring our
     // worktree directory, once per workspace per host run. Root repos only.
+    // The line is localized from the DSH locale preference (see host/locale.ts).
     if (rootRepo && !gitHinted.has(path)) {
       gitHinted.add(path)
       if (await gitignoreMissing(path)) {
-        console.info(`[dsh-taskboard] 建议在 ${path}/.gitignore 加入一行 ${WORKTREE_DIR}/ 以隐藏任务 worktree 目录（不会自动修改）`)
+        const file = `${path}/.gitignore`
+        const hint = activeHostLocale(ctx) === 'zh'
+          ? `建议在 ${file} 加入一行 ${WORKTREE_DIR}/ 以隐藏任务 worktree 目录（不会自动修改）`
+          : `suggests adding one line to ${file}: ${WORKTREE_DIR}/ to hide the task worktree directory (no automatic edits)`
+        console.info(`[dsh-taskboard] ${hint}`)
       }
     }
     // The nested scan always runs: repoCount needs it even when the root
@@ -373,7 +381,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
       if (req.method === 'GET') {
         if (pathname === `${ROUTE_PREFIX}/state`) {
           await store.load()
-          json(res, { ok: true, value: store.snapshot() })
+          json(res, { ok: true, value: { ...store.snapshot(), capabilities: { archiveSessions: typeof workspaces.archiveSession === 'function' } } })
           return
         }
         if (pathname === `${ROUTE_PREFIX}/workspaces`) {
@@ -732,6 +740,12 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         try {
           const task = store.get(id)
           if (task === undefined) throw new Error('Error: not_found: no such task')
+          if (action === 'archive-sessions') {
+            if (task.trashedAt !== undefined || task.status !== 'archived') throw new Error('Error: invalid_transition: only archived live tasks can retry session archiving')
+            const result = await archiveTaskSessions(task, workspaces.archiveSession)
+            json(res, { ok: true, value: result })
+            return
+          }
           if (action === 'update') {
             const ifVersion = num(body, 'ifVersion')
             if (ifVersion === undefined || ifVersion === null) throw new Error('Error: version_conflict: ifVersion required')
@@ -795,13 +809,16 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           if (action === 'move') {
             const ifVersion = num(body, 'ifVersion')
             const status = str(body, 'status') ?? ''
+            const archiveSessions = body.archiveSessions === true
             if (ifVersion === undefined || ifVersion === null) throw new Error('Error: version_conflict: ifVersion required')
             const to = asStatus(status)
             let next: TaskRecord | undefined
+            let beforeTask: TaskRecord | undefined
             await store.mutate('task-moved', ledger => {
               const { index, task } = liveTaskAt(ledger, id)
               if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
               if (!canTransition(task.status, to)) throw new Error(`Error: invalid_transition: illegal transition ${task.status} → ${to}`)
+              beforeTask = task
               next = structuredClone(task)
               next.status = to
               next.version = task.version + 1
@@ -813,7 +830,10 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               ledger.tasks[index] = next
               return [next]
             })
-            json(res, { ok: true, value: summarize(next!) })
+            const sessionArchive = to === 'archived' && archiveSessions
+              ? await archiveTaskSessions(beforeTask ?? next!, workspaces.archiveSession)
+              : undefined
+            json(res, { ok: true, value: { ...summarize(next!), ...(sessionArchive !== undefined ? { sessionArchive } : {}) } })
             return
           }
           if (action === 'reject') {
@@ -1026,11 +1046,21 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             }
             // R1: the git merges above are slow — re-find the FRESH task inside
             // the mutation so a concurrent comment is never overwritten.
-            const pushComment = (body: string): Promise<void> =>
+            const pushComment = (body: string, system?: { key: string; params?: Record<string, string>; rows?: SystemCommentRow[] }): Promise<void> =>
               store.mutate('comment-added', ledger => {
                 const { index, task: fresh } = liveTaskAt(ledger, id)
                 const next = structuredClone(fresh)
-                next.comments.push({ id: newCommentId(), body: normalizeBody(body), version: 1, createdAt: options.now() })
+                next.comments.push({
+                  id: newCommentId(),
+                  body: normalizeBody(body),
+                  ...(system !== undefined ? {
+                    systemKey: system.key,
+                    ...(system.params !== undefined ? { systemParams: system.params } : {}),
+                    ...(system.rows !== undefined ? { systemRows: system.rows } : {}),
+                  } : {}),
+                  version: 1,
+                  createdAt: options.now(),
+                })
                 next.version = fresh.version + 1
                 next.updatedAt = options.now()
                 ledger.tasks[index] = next
@@ -1047,7 +1077,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               if (root.outcome === 'failed') {
                 throw new Error(`Error: invalid_input: ${root.error ?? '合并失败'}`)
               }
-              await pushComment(`[系统] 分支 ${root.branch} 已合并到主工作区（--no-ff）。`)
+              await pushComment(`[系统] 分支 ${root.branch} 已合并到主工作区（--no-ff）。`, { key: 'sys.mergeSingle', params: { branch: root.branch } })
               json(res, { ok: true, value: { merged: true, branch: root.branch } })
               return
             }
@@ -1059,7 +1089,10 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
                 ? `${labelOf(r.repo)} ✓ 已合并`
                 : r.outcome === 'noop' ? `${labelOf(r.repo)} ⟲ 无新提交` : `${labelOf(r.repo)} ✗ ${(r.error ?? '合并失败').slice(0, 150)}`)
               .join('；')
-            await pushComment(`[系统] 分支已按仓库合并（--no-ff）：${summary}`)
+            await pushComment(`[系统] 分支已按仓库合并（--no-ff）：${summary}`, {
+              key: 'sys.mergeMulti',
+              rows: results.map(r => ({ repo: r.repo, outcome: r.outcome, ...(r.error !== undefined ? { error: r.error.slice(0, 150) } : {}) })),
+            })
             json(res, {
               ok: true,
               value: {
