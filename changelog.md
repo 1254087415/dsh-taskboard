@@ -1,5 +1,13 @@
 # 更新日志 / Changelog
 
+### 0.6.5（未发布）
+
+- **补全卡 → 会话反向跳转（0.6.2 本地增强的方向性遗漏）**：主会话自动跟踪卡（无执行记录、无 session 认领者）此前在 GUI 卡上没有任何会话标识/跳转，只有「会话 → 卡」单向入口。现 `controller.refresh()` 并行拉 `/sessions/links` 构建 `sessionByTask`（taskId→sessionId）随 ledger 快照下发，`TaskCard`/`TaskDetail` 的 `targetSessionId` 在 executions/claimedBy 之后追加反向链接兜底——跟踪卡也能一键跳回来源会话。sessionLinks 缺失或路由不可用时静默降级保留旧值，不阻塞 refresh。测试：`tests/client.spec.ts`「tracked-card session button via reverse session links (0.6.2)」
+
+**English:**
+
+- **Complete the card→session reverse jump (a directional gap in the 0.6.2 local enhancement)**: auto-tracked cards created from a main session (no executions, no session claimer) previously showed no session handle on the GUI card — only the session→card direction existed. `controller.refresh()` now fetches `/sessions/links` in parallel and ships a `sessionByTask` (taskId→sessionId) map in the ledger snapshot; `TaskCard`/`TaskDetail` append that reverse link after the executions/claimedBy sources when deriving `targetSessionId`, so tracked cards get a one-click jump back to their source session. A missing `sessionLinks` method or an unavailable route degrades silently (previous map kept) and never blocks the refresh. Test: `tests/client.spec.ts` "tracked-card session button via reverse session links (0.6.2)"
+
 ### 0.6.4
 
 - **修复：client 激活早于 locale 服务时界面语言被永久定型为英文（[#16](https://github.com/cloader/dsh-taskboard/issues/16)，@imroc 报告并验证方案）**：taskboard client 零依赖、先于 `dsh-client-locale` 激活，`initI18n` 拿不到服务时的一次性回退检测撞上服务端渲染的静态 `<html lang="en">`，此后无重试。修复：无服务分支增加「迟挂载」——MutationObserver 监听 `<html lang>` 变化即时重新检测发布（locale 运行时激活同步 lang 后立即跟随），并以 250ms×8 轮询重试 `ctx.get('locale')`、服务出现即正常订阅接管；dispose 全量拆除

@@ -509,7 +509,10 @@ export function TaskDetail({ task, controller, now }: { task: TaskRecord; contro
   const stale = now !== undefined && isStaleClaim(task, now)
   const unchecked = (task.checklist ?? []).filter(i => !i.checked).length
   const sessionExecution = [...task.executions].reverse().find(e => e.sessionId !== undefined)
-  const targetSessionId = runningExecution?.sessionId ?? sessionExecution?.sessionId ?? (task.claimedBy?.startsWith('session-') ? task.claimedBy : undefined)
+  // Fallback: the session that auto-tracked this card (0.6.2 本地增强) — same
+  // reverse-link lookup as TaskCard, for cards with no executions/claimer.
+  const trackedSessionId = controller.getSnapshot().sessionByTask.get(task.id)
+  const targetSessionId = runningExecution?.sessionId ?? sessionExecution?.sessionId ?? (task.claimedBy?.startsWith('session-') ? task.claimedBy : undefined) ?? trackedSessionId
 
   /** Fire one top action under the shared busy guard; re-enable on settle. */
   const runAction = (action: () => Promise<unknown>): void => {

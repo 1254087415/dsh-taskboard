@@ -16,6 +16,9 @@ function routeResponse(path: string): unknown {
   if (path === '/dsh-taskboard/workspaces') {
     return { ok: true, value: [{ id: 'ws-a', path: '/proj/a', title: 'A', sessionCount: 0 }] }
   }
+  if (path === '/dsh-taskboard/sessions/links') {
+    return { ok: true, value: [] }
+  }
   throw new Error(`unexpected fetch ${path}`)
 }
 
@@ -1593,6 +1596,9 @@ describe('client half', () => {
       if (path === '/dsh-taskboard/workspaces') {
         return new Response(JSON.stringify({ ok: true, value: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
       }
+      if (path === '/dsh-taskboard/sessions/links') {
+        return new Response(JSON.stringify({ ok: true, value: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
       throw new Error(`unexpected fetch ${path}`)
     })
     vi.stubGlobal('fetch', dynFetch)
@@ -1867,6 +1873,77 @@ describe('client half', () => {
 
     root.unmount()
     host.remove()
+    controller.dispose()
+    localStorage.clear()
+  })
+
+  it('TaskCard & TaskDetail: tracked-card session button via reverse session links (0.6.2)', async () => {
+    localStorage.clear()
+    const React = await import('react')
+    const { createRoot } = await import('react-dom/client')
+    const { BoardController } = await import('../src/client/controller.ts')
+    const { TaskCard } = await import('../src/client/board/TaskCard.tsx')
+    const { TaskDetail } = await import('../src/client/board/TaskDetail.tsx')
+    const { createSessionJumper } = await import('../src/client/session-jump.ts')
+
+    // A card auto-tracked from a main session: no executions, no session
+    // claimer — the reverse link from /sessions/links is its only session.
+    const taskTracked = {
+      id: 't-tracked', title: 'Tracked task', description: '', prompt: '', workspaceId: 'ws-a',
+      urgency: 'normal' as const, status: 'in_progress' as const, blocked: false,
+      execution: { mode: 'claim' as const }, version: 1, createdAt: 0, updatedAt: 0,
+      createdBy: { kind: 'user' as const }, updatedBy: { kind: 'user' as const },
+      comments: [], executions: [],
+    }
+
+    const client = {
+      state: async () => ({ schemaVersion: 1, revision: 1, tasks: [taskTracked] }),
+      workspaces: async () => [{ id: 'ws-a', path: '/p/a', title: 'A', sessionCount: 0 }],
+      sessionLinks: async () => [{ sessionId: 'session-812c2700-aaaa', taskId: 't-tracked', title: 'Tracked task', status: 'in_progress' }],
+      stream: () => () => {},
+    }
+    const controller = new BoardController(client as never)
+
+    const opened: string[] = []
+    const sessions = {
+      open: (id: string) => { opened.push(id) },
+      refresh: async () => {},
+      list: { getSnapshot: () => ({ byId: { 'session-812c2700-aaaa': {} } }) },
+    }
+    const workspaces = { list: { getSnapshot: () => ({ archivedSessionIds: [] }) } }
+    controller.installSessionJumper(createSessionJumper({
+      getSessions: () => sessions as never,
+      getWorkspaces: () => workspaces as never,
+    }))
+    controller.start()
+    await waitFor(() => controller.getSnapshot().sessionByTask.get('t-tracked') === 'session-812c2700-aaaa')
+
+    // TaskCard shows the jump button with the tracked session id.
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    root.render(React.createElement(TaskCard, { task: taskTracked as never, controller }))
+    await new Promise(r => setTimeout(r, 10))
+    const cardBtn = host.querySelector<HTMLButtonElement>('.dsh-atb-card-session')!
+    expect(cardBtn).not.toBeNull()
+    expect(cardBtn.textContent).toContain('812c2700')
+    cardBtn.click()
+    await new Promise(r => setTimeout(r, 20))
+    expect(opened).toEqual(['session-812c2700-aaaa'])
+    root.unmount()
+    host.remove()
+
+    // TaskDetail shows the same reverse-link session button.
+    const host2 = document.createElement('div')
+    document.body.append(host2)
+    const root2 = createRoot(host2)
+    root2.render(React.createElement(TaskDetail, { task: taskTracked as never, controller, now: 1_000 }))
+    await new Promise(r => setTimeout(r, 10))
+    const detailBtn = host2.querySelector<HTMLButtonElement>('.dsh-atb-detail-session')!
+    expect(detailBtn).not.toBeNull()
+    root2.unmount()
+    host2.remove()
+
     controller.dispose()
     localStorage.clear()
   })

@@ -44,7 +44,11 @@ export function TaskCard({ task, controller, draggable = false, now, onAlert }: 
   const stale = now !== undefined && isStaleClaim(task, now)
   const reviewing = task.status === 'in_review' && task.trashedAt === undefined
   const sessionExecution = [...task.executions].reverse().find(ex => ex.sessionId !== undefined)
-  const targetSessionId = running?.sessionId ?? sessionExecution?.sessionId ?? (task.claimedBy?.startsWith('session-') ? task.claimedBy : undefined)
+  // Fallback: the session that auto-tracked this card (0.6.2 本地增强). Cards
+  // created from a main session have no executions/claimer, so the reverse
+  // link from /sessions/links is the only session handle the card has.
+  const trackedSessionId = controller.getSnapshot().sessionByTask.get(task.id)
+  const targetSessionId = running?.sessionId ?? sessionExecution?.sessionId ?? (task.claimedBy?.startsWith('session-') ? task.claimedBy : undefined) ?? trackedSessionId
 
   /** Submit the quick-reject: one atomic route (move + optional note). */
   const submitReject = (): void => {

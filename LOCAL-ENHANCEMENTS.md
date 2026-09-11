@@ -19,10 +19,9 @@
 - 路由：`GET /dsh-taskboard/sessions/candidates`（读 session_projcache + workspace 映射，过滤归档/子 agent/噪音）+ `POST /dsh-taskboard/sessions/import`（批量建卡）
 - 弹窗：`src/client/board/SessionImportModal.tsx`，按项目分组、★ 任务感标记、全选/取消
 
-### 3. 会话 → 卡片跳转（sidebar）
-- 路由：`GET /dsh-taskboard/sessions/links`（返回全部 sessionId→taskId，过滤 trashed/已删）
-- `src/client/session-card-link.ts`：会话列表每行注入跳转按钮（仅当该会话有绑定卡），点击 → 打开看板并选中对应卡
-- 无绑定卡的会话行不显示按钮
+### 3. 会话 ↔ 卡片双向跳转
+- 会话 → 卡：路由 `GET /dsh-taskboard/sessions/links`（返回全部 sessionId→taskId，过滤 trashed/已删）+ `src/client/session-card-link.ts`：会话列表每行注入跳转按钮（仅当该会话有绑定卡），点击 → 打开看板并选中对应卡；无绑定卡的会话行不显示按钮
+- 卡 → 会话（0.6.2 补反向）：`controller.ts` refresh 并行拉 `/sessions/links` 构建 `sessionByTask`（taskId→sessionId，随 ledger 进入 snapshot，sessionLinks 缺失/失败时静默降级保留旧值）；`TaskCard.tsx` / `TaskDetail.tsx` 的 `targetSessionId` 计算在 executions/claimedBy 之后追加 `sessionByTask.get(task.id)` 兜底——让**主会话自动跟踪卡**（无执行记录、无 session 认领者）也能一键跳回来源会话。测试：`tests/client.spec.ts`「tracked-card session button via reverse session links」
 
 ### 4. 侧边栏入口 4 数字统计
 - `src/client/sidebar-entry.ts` 统计条从 `[todo|in_progress|in_review]` 扩为 `[backlog|todo|in_progress|in_review]`（待规划灰色），i18n 键 `shared.stats.title` 同步

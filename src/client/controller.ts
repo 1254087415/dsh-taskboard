@@ -81,6 +81,13 @@ export interface ControllerState {
   templatePrefill?: TaskTemplateSpec
   /** Transient error surface (action failures); cleared on next success. */
   error?: string
+  /**
+   * Reverse session→card links keyed by taskId (0.6.2 本地增强): lets a card
+   * jump to the session that auto-tracked it, even when the task has no
+   * executions and no session claimer. Refreshed alongside the ledger;
+   * empty when the host route is unavailable.
+   */
+  sessionByTask: ReadonlyMap<string, string>
 }
 
 /** Instantiate the default state (view state hydrated from localStorage). */
@@ -101,6 +108,7 @@ function initialState(): ControllerState {
     importOpen: false,
     settingsOpen: false,
     sessionImportOpen: false,
+    sessionByTask: new Map(),
   }
 }
 
@@ -180,15 +188,26 @@ export class BoardController {
         // newest seen revision — bounded rounds, then give up until the next
         // frame.
         for (let round = 0; round < 3; round++) {
-          const [ledger, workspaces] = await Promise.all([
+          const [ledger, workspaces, sessionLinks] = await Promise.all([
             this.client.state(),
             this.client.workspaces(),
+            // Reverse session→card links (0.6.2): fail-soft — an unavailable
+            // route keeps the previous map instead of breaking the refresh.
+            // sessionLinks() is guarded too: older client mocks / partial
+            // hosts may lack the method, and a throw here must not sink the
+            // whole refresh (the ledger still renders without the links).
+            (this.client.sessionLinks !== undefined
+              ? this.client.sessionLinks().then(
+                  rows => new Map(rows.filter(r => r.taskId.length > 0 && r.sessionId.length > 0).map(r => [r.taskId, r.sessionId])),
+                  () => this.state.sessionByTask,
+                )
+              : Promise.resolve(this.state.sessionByTask)),
           ])
           let selected: TaskRecord | undefined
           if (this.state.selectedId !== undefined) {
             selected = ledger.tasks.find(t => t.id === this.state.selectedId)
           }
-          this.setState({ ledger, workspaces, error: undefined, selectedId: selected === undefined ? undefined : this.state.selectedId })
+          this.setState({ ledger, workspaces, sessionByTask: sessionLinks, error: undefined, selectedId: selected === undefined ? undefined : this.state.selectedId })
           if (this.seenRevision === undefined || ledger.revision >= this.seenRevision) break
         }
       } catch (error) {
