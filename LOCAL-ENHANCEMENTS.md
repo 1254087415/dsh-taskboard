@@ -1,6 +1,6 @@
 # 本地增强说明（本 fork 相对上游的差异）
 
-> 本仓库 fork 自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard)，在**上游 v0.6.2 基准**上重放了本机（1254087415）的本地独有增强，并于 2026-09-11 合并 **upstream/main（v0.6.5–v0.6.7）** 至 v0.6.7；同时保留本 fork 的会话跟踪与卡片反向跳转增强。上游 `main` 更新时通过 `git fetch upstream && git merge upstream/main` 合并，冲突在本仓库解决。
+> 本仓库 fork 自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard)，在**上游 v0.6.2 基准**上重放了本机（1254087415）的本地独有增强，2026-09-11 合并至 v0.6.7，并于 2026-09-25 合并 **upstream/main（v0.7.0–v0.8.1）**；同时保留本 fork 的会话跟踪与卡片反向跳转增强。上游 `main` 更新时通过 `git fetch upstream && git merge upstream/main` 合并，冲突在本仓库解决。
 > 完整记录见本机 `~/Documents/project/docs/dsh-taskboard-本地增强记录.md` 第 5 节。
 
 ## 独有增强清单（commit 6d71378 起）
@@ -24,28 +24,26 @@
 - 卡 → 会话（0.6.2 补反向）：`controller.ts` refresh 并行拉 `/sessions/links` 构建 `sessionByTask`（taskId→sessionId，随 ledger 进入 snapshot，sessionLinks 缺失/失败时静默降级保留旧值）；`TaskCard.tsx` / `TaskDetail.tsx` 的 `targetSessionId` 计算在 executions/claimedBy 之后追加 `sessionByTask.get(task.id)` 兜底——让**主会话自动跟踪卡**（无执行记录、无 session 认领者）也能一键跳回来源会话。测试：`tests/client.spec.ts`「tracked-card session button via reverse session links」
 
 ### 4. 侧边栏入口 4 数字统计
-- `src/client/sidebar-entry.ts` 统计条从 `[todo|in_progress|in_review]` 扩为 `[backlog|todo|in_progress|in_review]`（待规划灰色），i18n 键 `shared.stats.title` 同步
+- 旧版 DOM 入口和新版官方侧栏入口均显示 `[backlog|todo|in_progress|in_review]`，待规划为灰色；折叠侧栏仍按上游行为显示待办角标。i18n 键 `shared.stats.title` 同步
 
 ### 5. Agent 协议纪律 9/10
 - `src/host/protocol-text.ts` 追加纪律 9（开场自检自动建卡，默认 todo）/ 10（留存会话导入）——上游无此内容
 
 ## 安装（本机 profile）
 
-`~/.dsh/profiles/web/package.json`：
+`~/.dsh/profiles/web/package.json` 当前将插件链接到本地 fork：
 
 ```json
-"dsh-taskboard": "github:1254087415/dsh-taskboard"
+"dsh-taskboard": "link:/Users/zab/Documents/project/dsh-taskboard"
 ```
 
-（对齐 `dsh-vision-router` 的 github: 装法；本仓库预提交 `lib/` 构建产物，github: 源安装零构建。）
+更新源码后执行 `npm run build`，再重启 `dsh web` 使 host 侧生效；客户端刷新浏览器即可。
 
 ## 上游升级流程
 
 ```bash
 cd ~/Documents/project/dsh-taskboard
-git fetch upstream && git merge upstream/main   # 解决冲突（重点看 session-tracker/协议文本）
-npm run build                                    # tsdown + minify（client 须 < 256KB）
-git add -A && git commit -m "merge upstream + rebuild" && git push origin main
-cd ~/.dsh/profiles/web && pnpm install           # 走代理 http://127.0.0.1:7897
-# 重启 dsh web 使 host 侧生效（client 刷新浏览器即可）
+git fetch upstream && git merge upstream/main   # 合并上游并保留本地会话增强
+npm run build                                    # 重建 host 与 client 产物
+# link 安装会直接使用当前仓库的 lib/；host 改动需重启 dsh web
 ```

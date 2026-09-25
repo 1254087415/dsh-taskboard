@@ -17,6 +17,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { registerTaskboardRoutes } from '../src/host/routes.ts'
 import { TaskStore, type LedgerChange } from '../src/host/store.ts'
 import { TemplateStore } from '../src/host/templates.ts'
+import { AssetStore } from '../src/host/assets.ts'
+import type { StorageCoordinator } from '../src/host/storage.ts'
 import type { GitFace } from '../src/host/git.ts'
 import type { RepoScanner } from '../src/host/repos.ts'
 import type { WorkspaceFace } from '../src/host/tools.ts'
@@ -31,6 +33,8 @@ let store: InstanceType<typeof TaskStore>
 /** The live template store behind the forwarding face; swapped in beforeEach. */
 let templates: InstanceType<typeof TemplateStore>
 let cancelCalls: string[]
+/** Mutable queue-clear hook target (tests reassign the behavior). */
+let clearQueueImpl: () => Promise<number> = async () => 0
 let runCalls: Array<{ id: string; runOptions?: { reuseWorktree?: boolean } }>
 let dir: string
 /** Per-test store file counter (unique names keep a fresh store from ever
@@ -187,10 +191,17 @@ beforeAll(async () => {
     now: () => 5_000,
     run: async (id, runOptions) => { runCalls.push({ id, runOptions }); return { ok: true, executionId: 'e-x', sessionId: 's-x' } },
     cancel: async id => { cancelCalls.push(id); return { ok: true, executionId: 'e-x' } },
+    clearQueue: () => clearQueueImpl(),
     modelProviders: () => ['prov-a'],
     git: gitFace,
     scanner: scannerFace,
     templates: templatesFace as unknown as InstanceType<typeof TemplateStore>,
+    assets: new AssetStore(join(dir, 'assets')),
+    storage: {
+      status: async () => ({ currentDirectory: dir, defaultDirectory: dir, isDefault: true, configured: false, writable: true, assetCount: 0, assetBytes: 0 }),
+      check: async (directory: string) => ({ currentDirectory: dir, defaultDirectory: dir, isDefault: true, configured: false, writable: true, assetCount: 0, assetBytes: 0, checkedDirectory: directory }),
+      migrate: async (directory: string) => ({ currentDirectory: directory, defaultDirectory: dir, isDefault: false, configured: true, writable: true, assetCount: 0, assetBytes: 0, migrated: true, warnings: [] }),
+    } as unknown as StorageCoordinator,
     modelCatalog: async () => ({
       models: [{ provider: 'prov-a', model: 'model-a', name: 'Model A' }],
       presets: [{ id: 'standard', name: '标准模式' }],
@@ -241,12 +252,51 @@ async function post(path: string, body: unknown): Promise<{ status: number; json
 }
 
 describe('taskboard routes', () => {
+  it('exposes storage status, path checks, and migration', async () => {
+    const status = await (await fetch(`${base}/dsh-taskboard/storage`)).json()
+    expect(status.value.currentDirectory).toBe(dir)
+    const checked = await post('/dsh-taskboard/storage/check', { directory: 'D:\\board-data' })
+    expect(checked.json.value.checkedDirectory).toBe('D:\\board-data')
+    const migrated = await post('/dsh-taskboard/storage/migrate', { directory: 'D:\\board-data' })
+    expect(migrated.json.value).toMatchObject({ currentDirectory: 'D:\\board-data', migrated: true })
+  })
+
+  it('uploads and serves content-addressed images with strict headers', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+    const uploaded = await fetch(`${base}/dsh-taskboard/assets`, {
+      method: 'POST',
+      headers: { 'content-type': 'image/png', 'x-dsh-taskboard-upload': '1' },
+      body: png,
+    })
+    expect(uploaded.status).toBe(201)
+    const body = await uploaded.json()
+    expect(body.value.url).toMatch(/^\/dsh-taskboard\/assets\/[a-f0-9]{64}\.png$/)
+
+    const served = await fetch(base + body.value.url)
+    expect(served.status).toBe(200)
+    expect(served.headers.get('content-type')).toBe('image/png')
+    expect(served.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(Buffer.from(await served.arrayBuffer())).toEqual(png)
+  })
+
+  it('rejects upload CSRF, spoofed image types, and traversal-shaped reads', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const noHeader = await fetch(`${base}/dsh-taskboard/assets`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: png })
+    expect(noHeader.status).toBe(403)
+    const spoofed = await fetch(`${base}/dsh-taskboard/assets`, {
+      method: 'POST', headers: { 'content-type': 'image/jpeg', 'x-dsh-taskboard-upload': '1' }, body: png,
+    })
+    expect(spoofed.status).toBe(400)
+    expect((await fetch(`${base}/dsh-taskboard/assets/..%2Fpackage.json`)).status).toBe(404)
+  })
+
   it('serves an empty state baseline', async () => {
     const res = await fetch(`${base}/dsh-taskboard/state`)
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.ok).toBe(true)
     expect(body.value.tasks).toEqual([])
+    expect(body.value.queue).toEqual({ depth: 0, dispatching: 0, maxConcurrent: 0 })
   })
 
   it('lists workspaces for the picker (with git availability)', async () => {
@@ -310,6 +360,8 @@ describe('taskboard routes', () => {
     expect(review.json.value.status).toBe('in_review')
     const done = await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: 3, status: 'done' })
     expect(done.json.value.status).toBe('done')
+    const reopened = await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: 4, status: 'todo' })
+    expect(reopened.json.value.status).toBe('todo')
   })
 
   it('rejects stale versions with 409', async () => {
@@ -354,7 +406,7 @@ describe('taskboard routes', () => {
     expect(full3.value.status).toBe('in_review')
     expect(full3.value.comments.length).toBe(1)
 
-    // Illegal source (done → todo is not in the state machine): 400.
+    // Reject is specifically an in_review action; done reopens through move.
     await post(`/dsh-taskboard/tasks/${id}/move`, { ifVersion: 9, status: 'done' })
     const illegal = await post(`/dsh-taskboard/tasks/${id}/reject`, { ifVersion: 10 })
     expect(illegal.status).toBe(400)
@@ -786,6 +838,20 @@ describe('taskboard routes', () => {
     }
   })
 
+  it('POST /queue/clear: reports the cleared count; hook errors surface as structured failures', async () => {
+    clearQueueImpl = async () => 3
+    const ok = await post('/dsh-taskboard/queue/clear', {})
+    expect(ok.status).toBe(200)
+    expect(ok.json).toEqual({ ok: true, value: { cleared: 3 } })
+
+    clearQueueImpl = async () => { throw new Error('Error: not_found: no scheduler') }
+    const bad = await post('/dsh-taskboard/queue/clear', {})
+    expect(bad.status).toBe(404)
+    expect(bad.json.ok).toBe(false)
+    clearQueueImpl = async () => 0
+  })
+
+
   it('run action passes reuse through to the execution service (续跑)', async () => {
     const created = await post('/dsh-taskboard/tasks', { title: 'Reuse me', workspaceId: 'ws-a', urgency: 'normal' })
     const id = created.json.value.id as string
@@ -1039,14 +1105,14 @@ describe('taskboard routes 0.5.0 (board settings → default isolation)', () => 
     const badType = await post('/dsh-taskboard/settings/update', { defaultIsolation: 42 })
     expect(badType.status).toBe(400)
 
-    const ok = await post('/dsh-taskboard/settings/update', { defaultIsolation: 'worktree' })
+    const ok = await post('/dsh-taskboard/settings/update', { defaultIsolation: 'worktree', maxConcurrent: 8, scheduleMissedAfterMinutes: 15 })
     expect(ok.status).toBe(200)
-    expect(ok.json.value).toEqual({ defaultIsolation: 'worktree' })
+    expect(ok.json.value).toEqual({ defaultIsolation: 'worktree', maxConcurrent: 8, scheduleMissedAfterMinutes: 15 })
 
     const after = await (await fetch(`${base}/dsh-taskboard/settings`)).json()
-    expect(after.value).toEqual({ defaultIsolation: 'worktree' })
+    expect(after.value).toEqual({ defaultIsolation: 'worktree', maxConcurrent: 8, scheduleMissedAfterMinutes: 15 })
     const state = await (await fetch(`${base}/dsh-taskboard/state`)).json()
-    expect(state.value.settings).toEqual({ defaultIsolation: 'worktree' })
+    expect(state.value.settings).toEqual({ defaultIsolation: 'worktree', maxConcurrent: 8, scheduleMissedAfterMinutes: 15 })
   })
 
   it('create materializes the board default on omitted isolation; explicit wins; earlier tasks unaffected', async () => {

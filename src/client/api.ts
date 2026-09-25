@@ -7,10 +7,12 @@
  */
 import type {
   ApiResult,
+  AttachmentUpload,
   ChangeEvent,
   CreateTaskBody,
   DeleteTaskBody,
   DiagnosticsResponse,
+  QueueClearResponse,
   DiffResponse,
   ImportCommitResponse,
   ImportPreviewResponse,
@@ -27,6 +29,8 @@ import type {
   SessionLinkRow,
   SessionPick,
   SettingsResponse,
+  StorageMigrationResult,
+  StorageStatus,
   StateResponse,
   TaskRecord,
   TaskTemplate,
@@ -64,6 +68,17 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return unwrap<T>(res)
 }
 
+/** Upload raw image bytes; a custom header keeps the route outside simple CSRF requests. */
+async function uploadImage(file: Blob): Promise<AttachmentUpload> {
+  const res = await fetch('/dsh-taskboard/assets', {
+    method: 'POST',
+    headers: { 'content-type': file.type, 'x-dsh-taskboard-upload': '1' },
+    body: file,
+    signal: AbortSignal.timeout(30_000),
+  })
+  return unwrap<AttachmentUpload>(res)
+}
+
 /** Route client face (the controller consumes this narrow surface). */
 export interface TaskboardClient {
   state(): Promise<StateResponse>
@@ -76,6 +91,8 @@ export interface TaskboardClient {
   /** Quick-reject (card ✗): back to todo + optional comment, one mutation. */
   reject(id: string, body: RejectTaskBody): Promise<TaskSummary>
   comment(id: string, bodyText: string): Promise<CommentRecord>
+  /** Persist an image and return the short Markdown-safe URL. */
+  uploadImage(file: Blob): Promise<AttachmentUpload>
   remove(id: string, body: DeleteTaskBody): Promise<{ trashed?: boolean; purged?: boolean }>
   /** Trigger a manual run (fresh in-project session); `reuse: true` = 续跑. */
   run(id: string, body?: RunTaskBody): Promise<{ executionId: string; sessionId: string }>
@@ -87,6 +104,8 @@ export interface TaskboardClient {
   worktreeRemove(id: string, body: WorktreeRemoveBody): Promise<{ removed: true; branchDeleted: boolean; branchError?: string }>
   /** Health diagnostics (⚙ panel). */
   diagnostics(): Promise<DiagnosticsResponse>
+  /** Drop every durable queue entry (board queue panel). */
+  clearQueue(): Promise<QueueClearResponse>
   /** Clean up one orphan worktree directory (task no longer in the ledger). */
   worktreeCleanup(workspaceId: string, taskId: string): Promise<{ cleaned: true; path: string }>
   /** Diff view: one execution's commit or changed path (read-only, capped). */
@@ -105,6 +124,11 @@ export interface TaskboardClient {
   settings(): Promise<SettingsResponse>
   /** Replace board settings (whole-object semantics; affects new tasks only). */
   updateSettings(body: UpdateSettingsBody): Promise<SettingsResponse>
+  /** Inspect and validate the host-side data directory. */
+  storage(): Promise<StorageStatus>
+  checkStorage(directory: string): Promise<StorageStatus>
+  /** Move ledger, templates, and attachments together. */
+  migrateStorage(directory: string): Promise<StorageMigrationResult>
   /** Prompt completions for skills and slash commands (0.5.5). */
   promptCompletions(): Promise<PromptCompletionsResponse>
   /** Model catalog and agent preset roster (0.5.5). */
@@ -131,12 +155,14 @@ export function createClient(): TaskboardClient {
     archiveSessions: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/archive-sessions`, {}),
     reject: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/reject`, body),
     comment: (id, bodyText) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/comment`, { body: bodyText }),
+    uploadImage,
     remove: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/delete`, body),
     run: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/run`, body ?? {}),
     cancel: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/cancel`, {}),
     mergeBranch: id => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/merge`, {}),
     worktreeRemove: (id, body) => post(`/dsh-taskboard/tasks/${encodeURIComponent(id)}/worktree-remove`, body),
     diagnostics: () => get<DiagnosticsResponse>('/dsh-taskboard/diagnostics'),
+    clearQueue: () => post<QueueClearResponse>('/dsh-taskboard/queue/clear', {}),
     worktreeCleanup: (workspaceId, taskId) => post('/dsh-taskboard/worktree-cleanup', { workspaceId, taskId }),
     diff: (taskId, query) => {
       const params = new URLSearchParams({ execution: query.execution })
@@ -152,6 +178,14 @@ export function createClient(): TaskboardClient {
     templateDelete: id => post('/dsh-taskboard/templates/delete', { id }),
     settings: () => get<SettingsResponse>('/dsh-taskboard/settings'),
     updateSettings: body => post('/dsh-taskboard/settings/update', body),
+    storage: () => get<StorageStatus>('/dsh-taskboard/storage'),
+    checkStorage: directory => post<StorageStatus>('/dsh-taskboard/storage/check', { directory }),
+    migrateStorage: directory => unwrap<StorageMigrationResult>(fetch('/dsh-taskboard/storage/migrate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ directory }),
+      signal: AbortSignal.timeout(120_000),
+    })),
     promptCompletions: () => get<PromptCompletionsResponse>('/dsh-taskboard/prompt-completions'),
     modelCatalog: () => get<ModelCatalogResponse>('/dsh-taskboard/model-catalog'),
     sessionCandidates: () => get<SessionCandidate[]>('/dsh-taskboard/sessions/candidates'),

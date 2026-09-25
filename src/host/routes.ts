@@ -49,6 +49,8 @@ import { createRepoScanner, type RepoScanner } from './repos.ts'
 import { activeHostLocale } from './locale.ts'
 import type { CatalogModelItem, CatalogPresetItem, MergeRepoResult, SessionLinkRow, TaskTemplate } from '../shared/api.ts'
 import type { TemplateStore } from './templates.ts'
+import { MAX_ASSET_BYTES, type AssetStore } from './assets.ts'
+import type { StorageCoordinator } from './storage.ts'
 import { ROUTE_PREFIX, SSE_PATH, type ApiFail, type ApiResult } from '../shared/api.ts'
 import type { TaskStore } from './store.ts'
 import { ERR, ToolError } from './tools.ts'
@@ -65,6 +67,7 @@ const MAX_BODY_BYTES = 5 * 1024 * 1024
 const TASK_DIFF_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/diff$`)
 const TASK_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)$`)
 const TASK_ACTION_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/([\\w-]+)$`)
+const ASSET_RE = new RegExp(`^${ROUTE_PREFIX}/assets/([a-f0-9]{64}\\.(?:png|jpg|gif|webp))$`)
 
 /** How long a workspace git-detection result stays cached (fail-soft). */
 const GIT_DETECT_TTL_MS = 60_000
@@ -77,6 +80,10 @@ export interface TaskboardRoutesOptions {
   store: TaskStore
   workspaces: RoutesWorkspaceFace
   now: () => number
+  /** Current scheduler concurrency limit, for queue observability only. */
+  maxConcurrent?: () => number
+  /** Drop every durable queue entry (board queue panel); absent → 501. */
+  clearQueue?: () => Promise<number>
   /** Manual-run hook (the execution service); absent → 501. Options carry `reuseWorktree` (续跑). */
   run?: (taskId: string, options?: { reuseWorktree?: boolean }) => Promise<{ ok: true; executionId: string; sessionId: string } | { ok: false; error: string }>
   /** Cancel hook (the execution service); absent → 501. */
@@ -92,6 +99,12 @@ export interface TaskboardRoutesOptions {
   scanner?: RepoScanner
   /** Task-template store (0.4.0); absent → 501 on template actions. */
   templates?: TemplateStore
+  /** Durable image attachment store (0.7.0); absent → attachment routes unavailable. */
+  assets?: AssetStore
+  /** Configurable data-directory coordinator (0.7.0). */
+  storage?: StorageCoordinator
+  /** Initial storage/ledger readiness barrier. */
+  ready?: () => Promise<void>
   /** Prompt completions face (0.5.5; dynamically discovers skills & commands). */
   promptCompletions?: () => Promise<{
     skills?: Array<{ name: string; description?: string }>
@@ -131,7 +144,7 @@ function normalizeTemplateSpec(raw: unknown, now: number): TaskTemplate['task'] 
   if (presetId !== undefined && presetId.trim().length > 0) spec.presetId = presetId.trim()
   if (permission !== undefined && permission.trim().length > 0) spec.permission = asPermission(permission)
   if (e.execution !== undefined) {
-    spec.execution = normalizeExecution(e.execution as { mode?: string; cron?: string }, now)
+    spec.execution = normalizeExecution(e.execution as { mode?: string; cron?: string; runAt?: unknown }, now)
   }
   if (e.model !== undefined) spec.model = normalizeModel(e.model)
   if (e.checklist !== undefined) {
@@ -193,6 +206,19 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown> |
   }
 }
 
+/** Read one bounded binary upload without ever buffering beyond the file cap. */
+async function readBytes(req: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let total = 0
+  for await (const chunk of req) {
+    const bytes = chunk as Buffer
+    total += bytes.length
+    if (total > limit) throw new Error('body too large')
+    chunks.push(bytes)
+  }
+  return Buffer.concat(chunks)
+}
+
 /** String field accessor (null when absent/not a string). */
 function str(body: Record<string, unknown>, key: string): string | null {
   const v = body[key]
@@ -250,6 +276,26 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
   const { store, workspaces } = options
   const subscribers = new Set<ServerResponse>()
   let heartbeat: NodeJS.Timeout | undefined
+
+  const queueSummary = (ledger: TaskLedger) => {
+    let depth = 0
+    let dispatching = 0
+    let oldestQueuedAt: number | undefined
+    for (const task of ledger.tasks) {
+      if (task.execution.queuedRunAt !== undefined) {
+        depth += 1
+        if (task.execution.queuedAt !== undefined && (oldestQueuedAt === undefined || task.execution.queuedAt < oldestQueuedAt)) oldestQueuedAt = task.execution.queuedAt
+      }
+      if (task.execution.dispatchingRunAt !== undefined) dispatching += 1
+    }
+    const now = options.now()
+    return {
+      depth,
+      dispatching,
+      ...(oldestQueuedAt === undefined ? {} : { oldestQueuedAt, oldestWaitMinutes: Math.max(0, Math.floor((now - oldestQueuedAt) / 60_000)) }),
+      maxConcurrent: options.maxConcurrent?.() ?? 0,
+    }
+  }
 
   /** R4③: a cleanup/purge target must resolve INSIDE <ws>/.dsh-worktrees — string joining alone is never trusted with an rm. */
   const insideWorktreeScope = (wsPath: string, target: string): boolean => {
@@ -379,9 +425,29 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
 
       // ---------------------------------------------------------------- GET
       if (req.method === 'GET') {
+        if (pathname === `${ROUTE_PREFIX}/storage`) {
+          if (options.storage === undefined) { res.writeHead(501); res.end(); return }
+          json(res, { ok: true, value: await options.storage.status() })
+          return
+        }
+        await options.ready?.()
+        const assetMatch = pathname.match(ASSET_RE)
+        if (assetMatch !== null) {
+          const asset = await options.assets?.read(assetMatch[1]!)
+          if (asset === undefined) { res.writeHead(404); res.end(); return }
+          res.writeHead(200, {
+            'content-type': asset.mime,
+            'content-length': asset.bytes.length,
+            'cache-control': 'public, max-age=31536000, immutable',
+            'x-content-type-options': 'nosniff',
+          })
+          res.end(asset.bytes)
+          return
+        }
         if (pathname === `${ROUTE_PREFIX}/state`) {
           await store.load()
-          json(res, { ok: true, value: { ...store.snapshot(), capabilities: { archiveSessions: typeof workspaces.archiveSession === 'function' } } })
+          const ledger = store.snapshot()
+          json(res, { ok: true, value: { ...ledger, capabilities: { archiveSessions: typeof workspaces.archiveSession === 'function' }, queue: queueSummary(ledger) } })
           return
         }
         if (pathname === `${ROUTE_PREFIX}/workspaces`) {
@@ -454,6 +520,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         }
         if (pathname === `${ROUTE_PREFIX}/diagnostics`) {
           const ledger = store.snapshot()
+          const queue = queueSummary(ledger)
           let staleRunning = 0
           for (const t of ledger.tasks) {
             for (const e of t.executions) if (e.outcome === 'running') staleRunning += 1
@@ -464,6 +531,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               revision: ledger.revision,
               tasks: ledger.tasks.length,
               staleRunning,
+              queue,
               orphanWorktrees: await listOrphanWorktrees(),
               gitIgnoreSuggestions: await listGitignoreSuggestions(),
             },
@@ -587,6 +655,34 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         res.end()
         return
       }
+      // Content-addressed image upload. The custom header makes this a
+      // non-simple cross-origin request, preserving the JSON routes' CSRF fence.
+      if (pathname === `${ROUTE_PREFIX}/assets`) {
+        await options.ready?.()
+        if (options.assets === undefined) {
+          const f = fail('invalid_input', 'image attachments unavailable')
+          json(res, f.res, 501)
+          return
+        }
+        if (req.headers['x-dsh-taskboard-upload'] !== '1') {
+          const f = fail('forbidden', 'missing upload header')
+          json(res, f.res, 403)
+          return
+        }
+        const declaredMime = String(req.headers['content-type'] ?? '').split(';', 1)[0]!.trim().toLowerCase()
+        try {
+          const bytes = await readBytes(req, MAX_ASSET_BYTES)
+          await options.assets.cleanup(JSON.stringify(store.snapshot()))
+          const asset = await options.assets.put(bytes, declaredMime)
+          json(res, { ok: true, value: asset }, 201)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const status = message.includes('1..') ? 413 : message.includes('quota') ? 507 : 400
+          const f = fail('invalid_input', message)
+          json(res, f.res, status)
+        }
+        return
+      }
       // CSRF fence: cross-site simple requests cannot set application/json.
       const contentType = req.headers['content-type'] ?? ''
       if (!contentType.toLowerCase().startsWith('application/json')) {
@@ -607,6 +703,29 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
         json(res, f.res, 400)
         return
       }
+
+      // Storage location is bootstrap metadata outside the ledger. Keep it on
+      // separate routes so JSON imports and whole-ledger replacement cannot
+      // redirect host filesystem writes.
+      if (pathname === `${ROUTE_PREFIX}/storage/check` || pathname === `${ROUTE_PREFIX}/storage/migrate`) {
+        if (options.storage === undefined) {
+          const f = fail('invalid_input', 'storage configuration unavailable')
+          json(res, f.res, 501)
+          return
+        }
+        try {
+          const directory = str(body, 'directory') ?? ''
+          const value = pathname.endsWith('/check')
+            ? await options.storage.check(directory)
+            : await options.storage.migrate(directory)
+          json(res, { ok: true, value })
+        } catch (error) {
+          const f = fail('invalid_input', error instanceof Error ? error.message : String(error))
+          json(res, f.res, f.status)
+        }
+        return
+      }
+      await options.ready?.()
 
       // --------------------------------------- POST /sessions/import (GUI)
       // Batch-create board cards from retained sessions picked in the GUI
@@ -676,7 +795,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           if (status !== 'backlog' && status !== 'todo') {
             throw new Error('Error: invalid_transition: a new task must start as backlog or todo')
           }
-          const execution = normalizeExecution((body.execution as { mode?: string; cron?: string } | undefined) ?? {}, options.now())
+          const execution = normalizeExecution((body.execution as { mode?: string; cron?: string; runAt?: unknown } | undefined) ?? {}, options.now())
           const model = body.model === undefined ? undefined : checkModel(body.model, options.modelProviders)
           const isolationRaw = str(body, 'isolation')
           // 0.5.0: an omitted isolation is MATERIALIZED from the board
@@ -772,7 +891,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               }
               if (typeof body.blocked === 'boolean') next.blocked = body.blocked
               // The GUI (task owner surface) may edit model/execution; null clears the model.
-              if (body.execution !== undefined) next.execution = normalizeExecution(body.execution as { mode?: string; cron?: string }, options.now())
+              if (body.execution !== undefined) next.execution = normalizeExecution(body.execution as { mode?: string; cron?: string; runAt?: unknown }, options.now())
               if (body.model === null) next.model = undefined
               else if (body.model !== undefined) next.model = checkModel(body.model, options.modelProviders)
               // Isolation may change only before the first execution (分支与基线
@@ -846,6 +965,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             await store.mutate('task-moved', ledger => {
               const { index, task } = liveTaskAt(ledger, id)
               if (ifVersion !== task.version) throw new Error(`Error: version_conflict: stale version ${ifVersion} (current ${task.version})`)
+              if (task.status !== 'in_review') throw new Error(`Error: invalid_transition: reject requires in_review (current ${task.status})`)
               if (!canTransition(task.status, 'todo')) throw new Error(`Error: invalid_transition: illegal transition ${task.status} → todo`)
               next = structuredClone(task)
               next.status = 'todo'
@@ -1153,6 +1273,23 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           }
           const f = fail('not_found', `unknown action ${action}`)
           json(res, f.res, f.status)
+        } catch (error) {
+          const f = toFail(error)
+          json(res, f.res, f.status)
+        }
+        return
+      }
+
+      // ----------------------------------- POST /queue/clear (board queue panel)
+      if (pathname === `${ROUTE_PREFIX}/queue/clear`) {
+        if (options.clearQueue === undefined) {
+          const f = fail('invalid_input', 'scheduler queue clear unavailable')
+          json(res, f.res, 501)
+          return
+        }
+        try {
+          const cleared = await options.clearQueue()
+          json(res, { ok: true, value: { cleared } })
         } catch (error) {
           const f = toFail(error)
           json(res, f.res, f.status)

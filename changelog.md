@@ -1,5 +1,145 @@
 # 更新日志 / Changelog
 
+### 0.8.1
+
+**修复 / 调度：**
+
+- **同点批量定时任务补跑节流（[#32](https://github.com/cloader/dsh-taskboard/issues/32)）**：持久 FIFO 队列现提供排队深度、最久等待时间和最大并发数；进行中卡片显示排队数，可打开队列查看正在等待派发的任务，并可二次确认清空任务队列。清空只移除尚未派发的队列项，已运行会话不受影响。
+- 新增可选的队列保质期（`queueMaxAgeMinutes`，默认 `0`，继续保留跨重启补跑）与定时会话启动间隔（`dispatchIntervalMs`，默认 `1000 ms`；可显式设为 `0` 关闭节流）。
+- 调度器以单飞 tick 和全局派发闸门避免 interval/catchup 重叠时并行放行队列。
+- 移除 DSH STORE 的客户端产物大小预算与专用测试；仍保留客户端压缩作为常规构建优化，而非发布门槛。
+
+**English:**
+
+**Fixes / Scheduling:**
+
+- **Replay throttling for concurrent scheduled tasks ([#32](https://github.com/cloader/dsh-taskboard/issues/32))**: the durable FIFO queue now exposes its depth, oldest wait, and concurrency cap; the in-progress card shows the queued count, and users can open the queue to inspect waiting tasks or double-confirm clearing it. Clearing only removes entries that have not been dispatched; running sessions are unaffected.
+- Adds optional queue shelf life (`queueMaxAgeMinutes`, default `0`, retaining restart replay) and scheduled-session start spacing (`dispatchIntervalMs`, default `1000 ms`; set it explicitly to `0` to disable throttling).
+- The scheduler uses a single-flight tick and global dispatch gate to prevent interval/catchup overlap from releasing queued work in parallel.
+- Removes the DSH STORE client-artifact size budget and its dedicated test. Client minification remains a normal build optimization, not a release gate.
+
+### 0.8.0
+
+1. **新版本增强兼容性（[#31](https://github.com/cloader/dsh-taskboard/issues/31)）**：侧边栏的注入在 dsh ≥ v0.1.7 使用官方 API（`sidebar.panellist` + `main` 注册一等侧边栏面板），同时兼容 dsh < v0.1.7 版本使用 DOM 注入。
+
+**English:**
+
+1. **Enhanced compatibility on newer versions ([#31](https://github.com/cloader/dsh-taskboard/issues/31))**: the sidebar entry uses the official API on dsh ≥ v0.1.7 (registered as a first-class sidebar panel via `sidebar.panellist` + `main`), while staying compatible with dsh < v0.1.7 through DOM injection.
+
+### 0.7.6
+
+**修复：**
+
+- 修复定时任务在并发满载后排队超过旧 5 分钟阈值会被误判为离线错过、静默跳过且永不补跑的问题（[#30](https://github.com/cloader/dsh-taskboard/issues/30)）。到期窗口现持久化进入 FIFO 队列，槽位释放后继续执行；真正离线错过的周期任务会留下系统评论。
+- 在「设置」中增加最大并发执行数（1–100）和「离线错过超时后不补任务」（1–1440 分钟）。保存后立即作用于后续调度与执行门禁；已排队任务不受该超时影响。
+
+**English:**
+
+**Fixes:**
+
+- Fix scheduled tasks being silently skipped forever when they waited for a saturated concurrency cap beyond the former five-minute threshold ([#30](https://github.com/cloader/dsh-taskboard/issues/30)). Due windows now enter a durable FIFO queue and run after capacity frees; genuinely offline-missed periodic windows leave a system comment.
+- Add Settings controls for maximum concurrent executions (1–100) and the offline missed-window timeout (1–1440 minutes). Changes apply to subsequent scheduler and execution gates immediately; queued work is unaffected by this timeout.
+
+### 0.7.5
+
+**新特性：**
+
+- 增加已归档和已删除卡片的批量删除或清理功能（[#29](https://github.com/cloader/dsh-taskboard/issues/29)）。
+
+**English:**
+
+**New features:**
+
+- Add batch delete / purge for archived and deleted cards ([#29](https://github.com/cloader/dsh-taskboard/issues/29)).
+
+### 0.7.4
+
+**新特性：**
+
+- 执行方式拆分为三档：**认领制**、**定时执行**（新增，指定 runAt 时间点只执行一次，触发即消费；错过超过 5 分钟窗口不补跑，留系统评论提示）与**定期执行**（原 cron 定时执行）。
+- **定期任务接棒机制**：每轮执行成功后，原卡正常进入「待验收」并摘除 cron，同时系统自动新建一张全新 todo 接棒卡承接 cron 继续周期（nextRunAt 从结算时刻重算，不补偿连跑），新卡 spawnedFrom 指回原卡并以系统评论互相链接；验收走原卡，周期不断。
+- 调度器与执行原子门禁一律只认 todo：in_review 卡片不再被定时触发（原「循环任务在 in_review 继续运行」语义由接棒卡取代）；存量停在 in_review 的 cron 卡需手动移回待办。失败结算仍回 todo 且周期由接棒卡承接，不受影响。
+
+**English:**
+
+**New features:**
+
+- Execution modes now come in three flavors: **claim**, **one-shot scheduled** (new — a runAt instant that fires exactly once and is consumed; windows missed by more than 5 minutes are skipped with a system comment) and **periodic scheduled** (the former cron mode).
+- **Periodic hand-off**: after each successful round the finished card settles in review with its cron stripped, while a fresh todo successor card is minted to carry the cron onward (nextRunAt recomputed from settlement — no compensating catch-up burst). The successor links back via spawnedFrom and system comments on both cards; acceptance happens on the finished card and the cycle never stalls.
+- The scheduler and the atomic execution gate now only fire todo cards: in_review cards are never triggered again (the previous "recurring runs from in_review" behavior is replaced by the successor card). Legacy periodic cards parked in in_review must be moved back to todo manually. Failure settlement still returns to todo and the cycle continues on the successor, so it is unaffected.
+
+### 0.7.3
+
+**修复：**
+
+- 修复 agent 通过 `taskboard_create` 创建任务时没有物化看板默认权限的问题（[#28](https://github.com/cloader/dsh-taskboard/issues/28)）：创建工具新增可选 `permission`，省略时读取并写入当前 `settings.defaultPermission`；`taskboard_update` 同步支持修改权限。定时执行不再意外回退到工厂默认的 `workspace-write`。
+- 修复 `done`、`canceled`、`archived` 等终态任务仍会被 cron 重新拉起的问题：调度扫描和执行原子门禁共同限制可触发状态，保留循环任务在 `in_review` 下继续运行的既有语义；终态任务保留 cron 配置但不消耗调度窗口，显式重开后可恢复。新增用户侧 `done → todo` 重开路径，评审“拒绝”操作仍只接受 `in_review`。
+- 同步插件版本常量与 lockfile，避免 0.7.2 包元数据和界面版本显示不一致。
+
+**English:**
+
+**Fixes:**
+
+- Fix agent-created tasks failing to materialize the board's default permission ([#28](https://github.com/cloader/dsh-taskboard/issues/28)): `taskboard_create` now accepts an optional `permission` and persists `settings.defaultPermission` when omitted; `taskboard_update` can also change it. Scheduled runs no longer fall back unexpectedly to the factory `workspace-write` default.
+- Prevent cron from reviving terminal `done`, `canceled`, or `archived` tasks. Both scheduler selection and the atomic execution gate enforce eligible states while preserving recurring execution from `in_review`. Terminal tasks retain their cron without consuming windows and resume after an explicit reopen. Users can reopen `done → todo`; review rejection remains restricted to `in_review`.
+- Synchronize the plugin version constant and lockfile so package metadata and the displayed version agree.
+
+### 0.7.2
+
+**新特性：**
+
+- 定时执行会话复用（[#26](https://github.com/cloader/dsh-taskboard/issues/26)）：cron 定时首次执行才创建会话，后续触发沿用该任务上一次定时执行的会话与上下文，重启 DSH 后从持久化历史恢复；手动执行仍新建会话。项目、模型（含 reasoning effort）、preset、权限或隔离配置变化时自动新建兼容会话；旧会话忙碌、锁定、损坏或恢复失败时回退新建会话，本次执行照常进行。每次执行仍独立记录结果与报告，并发送当前任务内容与交接协议。
+
+**修复：**
+
+- 失败结算按执行 ID 精确定位，避免复用会话下误伤同一会话的其他执行；系统交接评论判定增加时间过滤，复用会话不再把本执行之前的历史评论误认为本次交接；取消请求可以胜过尚未提交的空闲结算，不再出现"已成功却报取消"的相反竞态。
+
+**English:**
+
+**New features:**
+
+- Scheduled session reuse ([#26](https://github.com/cloader/dsh-taskboard/issues/26)): the first cron run creates a conversation; subsequent triggers resume that task's previous scheduled session and context, restoring persisted history after a DSH restart. Manual runs still open fresh sessions. Changed project, model (including reasoning effort), preset, permission or isolation configuration starts a compatible new conversation; busy, locked, corrupt or unrestorable sessions fall back to a new one so the scheduled run still proceeds. Each run keeps a separate result/report and receives the current task content and hand-off protocol.
+
+**Fixes:**
+
+- Failure settlement now locates the exact execution by ID, so reused sessions can no longer misattribute failures across runs sharing a session; hand-off comment detection filters by time, so historical comments no longer count as the current hand-off; a cancel request wins over an uncommitted idle settlement, inverting the previous cancel-vs-success race.
+
+### 0.7.1
+
+**修复：**
+
+- 修复数据目录迁移成功后没有明确反馈的问题：迁移完成后在看板设置的存储区显示绿色成功提示（含新路径）；旧数据清理失败改为以警示样式显示在成功提示下方，不再占用全局错误横幅；关闭设置或修改路径后提示消失。
+
+**English:**
+
+**Fixes:**
+
+- Fix the missing feedback after a successful data-directory migration: the storage section now shows a green success notice with the new path; old-data cleanup warnings render beneath it as warnings instead of occupying the global error banner. The notice clears on closing settings or editing the path.
+
+### 0.7.0
+
+**新特性：**
+
+- 看板设置新增数据存储路径：`dsh-taskboard.json`、`dsh-taskboard-templates.json` 和 `dsh-taskboard-assets/` 统一存放在所选目录；可检查目录并在运行中迁移。三类存储共享串行队列，迁移先在目标目录写入并校验完整副本，再原子切换固定保留在 `DSH_HOME` 的位置引导文件，最后清理旧数据；目标冲突或迁移失败时继续使用原位置。
+- 任务描述与评论支持插入图片（[#25](https://github.com/cloader/dsh-taskboard/issues/25)）：可通过文件选择、粘贴或拖放上传 PNG/JPEG/GIF/WebP，保存为 Markdown 图片并在详情中显示缩略图与灯箱预览。图片按 SHA-256 去重，单文件上限 5 MiB、总容量上限 200 MiB；校验文件魔数并拒绝 SVG，未被台账引用的草稿图片在 24 小时宽限期后清理。台账和 SSE 只携带短链接。
+- DSH 开发依赖升级到当前 0.1.5-rc.2 系列，并将 `@deepseek-ai/cordis` 升至 4.0.2、`@deepseek-ai/schemastery` 升至 3.18.2；在一次性 Profile 上实测 DSH 0.1.5-rc.1 的启动及看板路由，并加入兼容矩阵。
+
+**修复：**
+
+- 修复任务看板工具在会话开始后才出现、破坏模型请求稳定前缀的问题（[#24](https://github.com/cloader/dsh-taskboard/issues/24)）：协议与 10 个 `taskboard_*` 工具在插件挂载时同步注册，使工具集从首个请求起保持稳定，**提高缓存命中率**；依赖未就绪时保留工具定义并返回 `taskboard_not_ready`。工具执行等待共享的台账首次加载，工具清理与运行服务生命周期分离。
+
+**English:**
+
+**New features:**
+
+- Add a configurable data directory to Board Settings. `dsh-taskboard.json`, `dsh-taskboard-templates.json`, and `dsh-taskboard-assets/` move together. All stores share one serial queue; migration writes and verifies a complete target copy, atomically switches a location pointer kept in `DSH_HOME`, then cleans the old files. Conflicts or failed migrations leave the original location active.
+- Add image insertion to task descriptions and comments ([#25](https://github.com/cloader/dsh-taskboard/issues/25)): upload PNG/JPEG/GIF/WebP via file picker, paste, or drag and drop; task details render thumbnails with lightbox previews. Images use SHA-256 deduplication, a 5 MiB per-file limit and 200 MiB total quota, magic-byte validation with SVG rejected, and cleanup of abandoned drafts after 24 hours. The ledger and SSE carry short URLs only.
+- Upgrade DSH development dependencies to the current 0.1.5-rc.2 line, plus `@deepseek-ai/cordis` 4.0.2 and `@deepseek-ai/schemastery` 3.18.2. A disposable profile verifies DSH 0.1.5-rc.1 startup and taskboard routes, so that release is added to the compatibility matrix.
+
+**Fixes:**
+
+- Fix taskboard tools appearing after a session starts and changing the model request prefix ([#24](https://github.com/cloader/dsh-taskboard/issues/24)): the protocol and all ten `taskboard_*` tools register synchronously at plugin mount, keeping the tool set stable from the first request and **improving cache hit rates**. Definitions remain present while dependencies are unavailable and calls return `taskboard_not_ready`. Tool execution waits for the initial ledger load, and tool cleanup is separated from runtime-service lifecycles.
+
 ### 0.6.7
 
 - **本 fork 增强：补全卡 → 会话反向跳转（0.6.2 本地增强的方向性遗漏）**：主会话自动跟踪卡（无执行记录、无 session 认领者）此前在 GUI 卡上没有任何会话标识/跳转，只有「会话 → 卡」单向入口。现 `controller.refresh()` 并行拉 `/sessions/links` 构建 `sessionByTask`（taskId→sessionId）随 ledger 快照下发，`TaskCard`/`TaskDetail` 的 `targetSessionId` 在 executions/claimedBy 之后追加反向链接兜底——跟踪卡也能一键跳回来源会话。sessionLinks 缺失或路由不可用时静默降级保留旧值，不阻塞 refresh。测试：`tests/client.spec.ts`「tracked-card session button via reverse session links (0.6.2)」

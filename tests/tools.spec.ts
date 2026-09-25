@@ -35,7 +35,7 @@ function assertLossless(value: unknown, path = '$'): void {
 }
 
 /** Build the tool set and a fake agent exec context. */
-async function setup(deps: { modelProviders?: () => string[] | undefined } = {}) {
+async function setup(deps: { modelProviders?: () => string[] | undefined; ready?: () => Promise<void> } = {}) {
   const store = new TaskStore({ file: join(dir, `led-${Math.random().toString(36).slice(2)}.json`) })
   const registered: Array<Record<string, unknown>> = []
   const disposers = registerTaskboardTools(
@@ -52,6 +52,12 @@ async function setup(deps: { modelProviders?: () => string[] | undefined } = {})
 }
 
 describe('taskboard tool outputs', () => {
+  it('registers schemas before runtime dependencies are ready and gates execution', async () => {
+    const readyError = new Error('taskboard_not_ready: workspace service is starting')
+    const { tool, exec } = await setup({ ready: async () => { throw readyError } })
+    await expect(tool('taskboard_list').execute({}, exec)).rejects.toBe(readyError)
+  })
+
   it('renders carry the model-facing facts (id + version) — not one-line summaries', async () => {
     // Regression: the registry feeds output.render() to the MODEL (result.content);
     // a terse render starves the agent (it had to guess versions from error text).
@@ -233,6 +239,36 @@ describe('taskboard_create default isolation (0.5.0 board settings)', () => {
     await expect(tool('taskboard_create').execute(
       { title: 'Bad', workspaceId: 'ws-a', urgency: 'normal', isolation: 'docker' }, exec,
     )).rejects.toThrow('isolation must be')
+
+    for (const dispose of disposers) dispose()
+  })
+})
+
+describe('taskboard permission settings (Issue #28)', () => {
+  it('materializes the board default on create and allows explicit create/update overrides', async () => {
+    const { disposers, tool, exec, store } = await setup()
+    await store.mutate('settings-updated', ledger => {
+      ledger.settings = { ...ledger.settings, defaultPermission: 'danger-full-access' }
+      return []
+    })
+
+    const inherited = await tool('taskboard_create').execute(
+      { title: 'Inherited permission', workspaceId: 'ws-a', urgency: 'normal' }, exec,
+    ) as { task: { id: string } }
+    expect(store.get(inherited.task.id)!.permission).toBe('danger-full-access')
+
+    const explicit = await tool('taskboard_create').execute(
+      { title: 'Explicit permission', workspaceId: 'ws-a', urgency: 'normal', permission: 'read-only' }, exec,
+    ) as { task: { id: string } }
+    expect(store.get(explicit.task.id)!.permission).toBe('read-only')
+
+    await tool('taskboard_update').execute(
+      { id: explicit.task.id, ifVersion: 1, permission: 'workspace-write' }, exec,
+    )
+    expect(store.get(explicit.task.id)!.permission).toBe('workspace-write')
+    await expect(tool('taskboard_update').execute(
+      { id: explicit.task.id, ifVersion: 2, permission: 'root' }, exec,
+    )).rejects.toThrow('permission must be')
 
     for (const dispose of disposers) dispose()
   })

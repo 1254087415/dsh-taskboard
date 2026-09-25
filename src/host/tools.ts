@@ -27,11 +27,13 @@ import { defineTool } from './sdk.ts'
 import {
   MAX_CHECKLIST_ITEMS,
   asIsolation,
+  asPermission,
   asStatus,
   asUrgency,
   canTransition,
   checklistFromTexts,
   defaultIsolationOf,
+  defaultPermissionOf,
   effectivePrompt,
   isClaim,
   isClaimedBy,
@@ -87,7 +89,7 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
   const lines: string[] = [
     `任务 ${t.id} 「${t.title}」`,
     `状态: ${t.status} (v${t.version}) · 紧急度: ${t.urgency} · 项目: ${t.workspaceId}${t.blocked ? ' · 受阻' : ''}`,
-    `执行方式: ${t.execution.mode}${t.execution.cron !== undefined ? ` cron=${t.execution.cron}` : ''}`,
+    `执行方式: ${t.execution.mode}${t.execution.cron !== undefined ? ` 定期 cron=${t.execution.cron}` : ''}${t.execution.runAt !== undefined ? ` 定时(一次) runAt=${new Date(t.execution.runAt).toISOString()}` : ''}`,
     `隔离: ${t.isolation === 'none' ? '关闭（原目录执行）' : 'Git Worktree'}${t.branch !== undefined ? `（分支 ${t.branch}）` : ''}${t.branches !== undefined ? `（多仓库镜像 ${Object.keys(t.branches).length + (t.branch !== undefined ? 1 : 0)} 个仓库）` : ''}`,
   ]
   const holder = isClaimedBy(t)
@@ -138,6 +140,7 @@ function taskDetail(t: TaskRecord & { effectivePrompt?: string }): string {
 
 /** Stable error codes surfaced at the head of tool error messages. */
 export const ERR = {
+  notReady: 'taskboard_not_ready',
   notFound: 'not_found',
   versionConflict: 'version_conflict',
   workspaceMismatch: 'workspace_mismatch',
@@ -194,6 +197,8 @@ export interface ToolDeps {
   workspaces: WorkspaceFace
   /** Current epoch ms (injectable for tests). */
   now: () => number
+  /** Shared startup barrier; tool definitions stay registered while services initialize. */
+  ready?: () => Promise<void>
   /**
    * Registered model provider routes (from the host llm runtime), for
    * advisory validation of pinned models; undefined = runtime unavailable,
@@ -288,16 +293,17 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
 
   // Env-gated tool-call tracing (ATB_TRACE=1) — evidence for protocol E2E.
   const register = (tool: { name: string; execute?: unknown }) => {
-    if (process.env.ATB_TRACE === '1' && typeof tool.execute === 'function') {
+    if (typeof tool.execute === 'function') {
       const orig = tool.execute as (args: unknown, exec: unknown) => Promise<unknown>
       tool.execute = async (args: unknown, exec: unknown) => {
-        console.error(`[atb ▶] ${tool.name}`, JSON.stringify(args).slice(0, 300))
+        await deps.ready?.()
+        if (process.env.ATB_TRACE === '1') console.error(`[atb ▶] ${tool.name}`, JSON.stringify(args).slice(0, 300))
         try {
           const result = await orig(args, exec)
-          console.error(`[atb ✓] ${tool.name}`, JSON.stringify(result).slice(0, 300))
+          if (process.env.ATB_TRACE === '1') console.error(`[atb ✓] ${tool.name}`, JSON.stringify(result).slice(0, 300))
           return result
         } catch (error) {
-          console.error(`[atb ✗] ${tool.name}`, String(error).slice(0, 400))
+          if (process.env.ATB_TRACE === '1') console.error(`[atb ✗] ${tool.name}`, String(error).slice(0, 400))
           throw error
         }
       }
@@ -373,7 +379,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     description:
       'Create a task on the board. Required: title, workspaceId (project), urgency (urgent/normal/relaxed). '
       + 'Optional: description, prompt (sent to a fresh session on execution), status (default todo), '
-      + 'execution mode (claim|scheduled + cron), model {provider, model} to pin executions to a model. '
+      + 'execution mode (claim | scheduled+cron 定期重复 | scheduled+runAt 定时一次), model {provider, model} to pin executions to a model. '
       + 'Do not track trivial requests as tasks.',
     parameters: {
       title: { type: 'string', required: true, description: 'Short imperative line (1..200 chars).' },
@@ -385,10 +391,11 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       execution: {
         type: 'object',
         additionalProperties: false,
-        description: 'Execution config: { mode: "claim" } (default) or { mode: "scheduled", cron: "m h dom mon dow" }.',
+        description: 'Execution config: { mode: "claim" } (default) | { mode: "scheduled", cron } periodic (定期, repeats) | { mode: "scheduled", runAt } one-shot (定时, fires once).',
         properties: {
           mode: { type: 'string', description: 'claim | scheduled.' },
-          cron: { type: 'string', description: 'Five-field cron expression (scheduled only).' },
+          cron: { type: 'string', description: 'Five-field cron expression (scheduled periodic only).' },
+          runAt: { type: 'string', description: 'One-shot trigger time: epoch ms or ISO string (scheduled one-shot only; must be in the future).' },
         },
       },
       model: {
@@ -404,6 +411,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       isolation: {
         type: 'string',
         description: 'Code isolation for executions: "worktree" (each run gets a fresh git worktree on branch task/<标题>+<taskId>) or "none" (run in the project directory, zero git interaction). Omitted → the board default (看板设置 → 默认执行隔离; factory default "none").',
+      },
+      permission: {
+        type: 'string',
+        description: 'Execution permission: "read-only", "workspace-write", or "danger-full-access". Omitted → the board default (看板设置 → 默认权限; factory default "workspace-write").',
       },
       presetId: {
         type: 'string',
@@ -430,9 +441,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       status?: string
       description?: string
       prompt?: string
-      execution?: { mode?: string; cron?: string }
+      execution?: { mode?: string; cron?: string; runAt?: string | number }
       model?: { provider?: string; model?: string }
       isolation?: string
+      permission?: string
       presetId?: string
       checklist?: string[]
     }, exec: unknown) {
@@ -453,6 +465,9 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         // (看板设置) at creation, so later setting changes never rewrite
         // existing tasks.
         const isolation = args.isolation === undefined ? defaultIsolationOf(store.snapshot().settings) : asIsolation(args.isolation)
+        // Match the GUI create route: freeze the current board default onto
+        // the task so later settings changes do not silently alter a schedule.
+        const permission = args.permission === undefined ? defaultPermissionOf(store.snapshot().settings) : asPermission(args.permission)
         const presetId = args.presetId?.trim() || undefined
         // T9: match the GUI create route — trim and drop blank lines instead
         // of failing the whole call over one empty string.
@@ -471,6 +486,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           execution,
           model,
           isolation,
+          permission,
           ...(presetId !== undefined ? { presetId } : {}),
           ...(checklist !== undefined ? { checklist } : {}),
           version: 1,
@@ -494,7 +510,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
   disposers.push(register(defineTool({
     name: 'taskboard_update',
     description:
-      'Update a task\'s title/description/prompt/urgency/blocked. Requires ifVersion (read first). '
+      'Update a task\'s title/description/prompt/urgency/blocked/permission. Requires ifVersion (read first). '
       + 'The model and execution config are read-only through this tool (they belong to the task owner/user).',
     parameters: {
       id: { type: 'string', required: true, description: 'Task id.' },
@@ -504,6 +520,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       prompt: { type: 'string', description: 'New execution prompt.' },
       urgency: { type: 'string', description: 'urgent | normal | relaxed.' },
       blocked: { type: 'boolean', description: 'Blocked marker (work cannot continue right now).' },
+      permission: { type: 'string', description: 'Execution permission: read-only | workspace-write | danger-full-access.' },
     },
     output: {
       schema: JSON_OUT,
@@ -521,6 +538,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       prompt?: string
       urgency?: string
       blocked?: boolean
+      permission?: string
     }, exec: unknown) {
       try {
         const { actor } = caller(exec as ToolRunContext)
@@ -538,6 +556,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           if (args.prompt !== undefined) next.prompt = normalizePrompt(args.prompt)
           if (args.urgency !== undefined) next.urgency = asUrgency(args.urgency)
           if (args.blocked !== undefined) next.blocked = args.blocked
+          if (args.permission !== undefined) next.permission = asPermission(args.permission)
           next.version = task.version + 1
           next.updatedAt = deps.now()
           next.updatedBy = actor
