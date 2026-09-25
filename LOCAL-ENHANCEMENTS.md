@@ -31,7 +31,7 @@
 
 ## 安装（本机 profile）
 
-`~/.dsh/profiles/web/package.json` 当前将插件链接到本地 fork：
+如需让本机 web profile 使用此 fork，可将 `~/.dsh/profiles/web/package.json` 中的依赖设为：
 
 ```json
 "dsh-taskboard": "link:/Users/zab/Documents/project/dsh-taskboard"
