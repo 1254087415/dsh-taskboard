@@ -151,11 +151,12 @@ describe('ExecutionService', () => {
     // body as a normal user message (followup, next-turn).
     expect(agents.injects).toHaveLength(1)
     expect(agents.followups).toHaveLength(1)
-    const inject = agents.injects[0] as { content: Array<{ type: string; text: string }>; source: { kind: string; plugin?: string } }
+    const inject = agents.injects[0] as { content: Array<{ type: string; text: string }>; source: { kind: string } }
     const user = agents.followups[0] as { content: Array<{ type: string; text: string }>; source: { kind: string } }
     expect(inject.content[0]!.type).toBe('text')
-    expect(inject.source.kind).toBe('plugin')
-    expect(inject.source.plugin).toBe('dsh-taskboard')
+    // dsh 0.1.7-rc.2 retired the generic `kind: 'plugin'` source; the taskboard
+    // now injects its framing line under its own producer-owned source kind.
+    expect(inject.source.kind).toBe('dsh-taskboard')
     expect(inject.content[0]!.text).toContain('【任务看板】Run me')
     expect(inject.content[0]!.text).toContain('ID: t-run')
     expect(inject.content[0]!.text).toContain('taskboard_get')
@@ -285,6 +286,47 @@ describe('ExecutionService', () => {
     expect(t.comments).toHaveLength(1)
     expect(t.comments[0]!.body).toContain('[系统]')
     expect(t.comments[0]!.body).toContain('未按协议交接')
+  })
+
+  it('re-arms a periodic task even when its agent already moved it to in_review', async () => {
+    const store = await storeWith(task({ execution: { mode: 'scheduled', cron: '* * * * *', nextRunAt: 2_000, periodicCompletion: 'rearm' } }))
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    const result = await svc.run('t-run', 'scheduled')
+    if (!result.ok) throw new Error('run failed')
+    await store.mutate('task-moved', ledger => {
+      const t = ledger.tasks[0]!
+      t.status = 'in_review'
+      delete t.claimedBy
+      return [t]
+    })
+    agents.idle(result.sessionId)
+    await waitFor(() => store.get('t-run')!.executions[0]!.outcome === 'succeeded')
+    const t = store.get('t-run')!
+    expect(t.status).toBe('todo')
+    expect(t.execution).toMatchObject({ mode: 'scheduled', cron: '* * * * *', nextRunAt: 2_000, periodicCompletion: 'rearm' })
+    expect(t.comments.some(c => c.systemKey === 'sys.periodicRearmed')).toBe(true)
+  })
+
+  it('defaults an unconfigured periodic task to a todo successor even when its agent already moved it to in_review', async () => {
+    const store = await storeWith(task({ execution: { mode: 'scheduled', cron: '* * * * *', nextRunAt: 2_000 } }))
+    const agents = fakeAgents()
+    const svc = new ExecutionService({ store, agents, workspaces, events: fakeEvents(), now: () => 1_000 })
+    const result = await svc.run('t-run', 'scheduled')
+    if (!result.ok) throw new Error('run failed')
+    await store.mutate('task-moved', ledger => {
+      const t = ledger.tasks[0]!
+      t.status = 'in_review'
+      delete t.claimedBy
+      return [t]
+    })
+    agents.idle(result.sessionId)
+    await waitFor(() => store.snapshot().tasks.length === 2)
+    const [finished, successor] = store.snapshot().tasks
+    expect(finished!.status).toBe('in_review')
+    expect(finished!.execution).toEqual({ mode: 'claim' })
+    expect(successor).toMatchObject({ status: 'todo', spawnedFrom: 't-run' })
+    expect(successor!.execution).toMatchObject({ mode: 'scheduled', cron: '* * * * *', periodicCompletion: 'spawn' })
   })
 
   it('passes pinned model and reasoningEffort to agents.create', async () => {
@@ -557,6 +599,41 @@ describe('ExecutionService', () => {
     const b = store.get('t-review')!
     expect(b.status).toBe('in_review')
     expect(b.executions[0]!.outcome).toBe('succeeded')
+  })
+
+  it('adopts a live execution during plugin reload instead of failing it as a restart', async () => {
+    const running = task({
+      id: 't-reload',
+      status: 'in_progress',
+      claimedBy: 'session-still-live',
+      claimedAt: 1,
+      executions: [{ id: 'e-reload', sessionId: 'session-still-live', trigger: 'manual', startedAt: 1, outcome: 'running' }],
+    })
+    const store = await storeWith(running)
+    let finish!: () => void
+    const idle = new Promise<void>(resolve => { finish = resolve })
+    const live = {
+      id: 'session-still-live',
+      followup: () => {},
+      inject: () => {},
+      whenIdle: () => idle,
+      cancel: () => {},
+    }
+    const svc = new ExecutionService({
+      store, agents: fakeAgents(), workspaces, events: fakeEvents(), now: () => 9_000,
+      liveAgent: id => id === 'session-still-live' ? live : undefined,
+    })
+
+    await svc.reconcile()
+    expect(store.get('t-reload')!.executions[0]!.outcome).toBe('running')
+    expect(store.get('t-reload')!.status).toBe('in_progress')
+    expect(svc.inFlight()).toBe(1)
+
+    finish()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await store.read(() => undefined)
+    expect(store.get('t-reload')!.executions[0]!.outcome).toBe('succeeded')
+    expect(store.get('t-reload')!.status).toBe('in_review')
   })
 
   it('rejects a run on a running or unknown task', async () => {

@@ -1,5 +1,35 @@
 # 更新日志 / Changelog
 
+### 0.8.3
+
+**修复：**
+
+- **更新时不再误报任务失败（[#39](https://github.com/cloader/dsh-taskboard/issues/39)）**：正在进行的任务在看板刷新或更新后，会继续等到它真正结束；不会因为看板更新而被提前写成失败。
+- **“认领超时”提示更准确（[#40](https://github.com/cloader/dsh-taskboard/issues/40)）**：只有仍在进行、并且很久没有新进展的任务才会显示这个提示。已经结束的任务不会再因为认领时间较早而被误标。
+- **进入正在进行的任务更顺手（[PR #37](https://github.com/cloader/dsh-taskboard/pull/37)）**：点击任务后会直接打开对应的工作位置。感谢 [@Fishsb](https://github.com/Fishsb) 的贡献。
+- **多人同时使用时保存更稳妥（[PR #38](https://github.com/cloader/dsh-taskboard/pull/38)）**：看板会按顺序保存最新内容，减少更新或刷新前后互相覆盖任务记录的风险。感谢 [@Fishsb](https://github.com/Fishsb) 的贡献。
+
+**English:**
+
+- **Tasks are no longer wrongly marked as failed during an update ([#39](https://github.com/cloader/dsh-taskboard/issues/39))**: work that is still in progress keeps waiting for its real result when the board is refreshed or updated.
+- **The “claim stale” hint is more accurate ([#40](https://github.com/cloader/dsh-taskboard/issues/40))**: it now appears only for work that is still running and has had no progress for a long time. Finished work is not flagged just because it was claimed earlier.
+- **Opening work that is in progress is smoother ([PR #37](https://github.com/cloader/dsh-taskboard/pull/37))**: selecting a task now takes you straight to its working place. Thanks to [@Fishsb](https://github.com/Fishsb) for the contribution.
+- **Safer saving when several updates happen together ([PR #38](https://github.com/cloader/dsh-taskboard/pull/38))**: the board saves the latest information in order, reducing the chance that one update overwrites another task record. Thanks to [@Fishsb](https://github.com/Fishsb) for the contribution.
+
+### 0.8.2
+
+**修复 / 调度：**
+
+- **兼容 DSH 0.1.7-rc.2 的执行开场注入（[PR #33](https://github.com/cloader/dsh-taskboard/pull/33)）**：DSH v4 会话格式不再接受通用的 `source.kind: 'plugin'`。看板现以自身的 `dsh-taskboard` 消息来源写入每次执行的上下文行，避免手动或定时任务在启动首轮因消息格式校验失败；后续用户 follow-up 消息不变。感谢 @weibaohui 提交并合入此修复。
+- **开发依赖升级**：`@deepseek-ai/dsh-agent`、`dsh-home-paths`、`dsh-host-webserver`、`dsh-system-prompt`、`dsh-tools` 和 `dsh-workspace` 统一升级至 `0.1.7-rc.2`；锁定的同族 peer 依赖随之收敛到同一 DSH 版本。
+- **定期任务完成策略（[#35](https://github.com/cloader/dsh-taskboard/issues/35)）**：定期任务默认「完成后新建待办」：本轮保留在待验收，宿主创建带 cron 的下一轮 todo 卡；可选「完成后移回待办」复用本卡继续等待 cron。宿主结算强制落实策略，不再受 agent 已移动至 `in_review` 的影响，模板和后继卡会保留选择；未设置的既有 cron 任务也采用新默认值。
+
+**English:**
+
+- **DSH 0.1.7-rc.2 execution-start compatibility ([PR #33](https://github.com/cloader/dsh-taskboard/pull/33))**: the DSH v4 session format no longer accepts the generic `source.kind: 'plugin'`. The board now writes each execution's framing row under its own `dsh-taskboard` message source, preventing manual or scheduled tasks from failing validation on the opening turn; later user follow-up messages are unchanged. Thanks to @weibaohui for contributing and merging this fix.
+- **Development dependency upgrade**: `@deepseek-ai/dsh-agent`, `dsh-home-paths`, `dsh-host-webserver`, `dsh-system-prompt`, `dsh-tools`, and `dsh-workspace` now use `0.1.7-rc.2`; their locked peer-dependency family resolves to the same DSH version.
+- **Periodic completion policies ([#35](https://github.com/cloader/dsh-taskboard/issues/35))**: periodic tasks now default to creating a new todo successor: the finished round stays in review while the host creates the next cron-bearing card. **Return to todo** remains available to reuse the same card for the next cron window. Settlement enforces the selected policy even when an agent already moved the card to `in_review`; templates and successors preserve it, and existing cron tasks without an explicit setting use the new default.
+
 ### 0.8.1
 
 **修复 / 调度：**
@@ -12,7 +42,6 @@
 **English:**
 
 **Fixes / Scheduling:**
-
 - **Replay throttling for concurrent scheduled tasks ([#32](https://github.com/cloader/dsh-taskboard/issues/32))**: the durable FIFO queue now exposes its depth, oldest wait, and concurrency cap; the in-progress card shows the queued count, and users can open the queue to inspect waiting tasks or double-confirm clearing it. Clearing only removes entries that have not been dispatched; running sessions are unaffected.
 - Adds optional queue shelf life (`queueMaxAgeMinutes`, default `0`, retaining restart replay) and scheduled-session start spacing (`dispatchIntervalMs`, default `1000 ms`; set it explicitly to `0` to disable throttling).
 - The scheduler uses a single-flight tick and global dispatch gate to prevent interval/catchup overlap from releasing queued work in parallel.

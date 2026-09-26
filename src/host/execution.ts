@@ -35,6 +35,20 @@ import { createRepoScanner, type RepoScanner } from './repos.ts'
 import { MessageId } from './sdk.ts'
 import type { TaskStore } from './store.ts'
 
+/**
+ * Producer-owned message source kind for the framing line dsh-taskboard injects
+ * at the head of each execution turn (the "plugin context row"). dsh 0.1.7-rc.2
+ * retired the generic `kind: 'plugin'` source — the v4 session format now
+ * requires every durable message to carry a producer-owned source kind (a
+ * non-empty string that is not `'plugin'`), declared here so the taskboard owns
+ * its attribution instead of using the retired wrapper.
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'dsh-taskboard': { kind: 'dsh-taskboard' }
+  }
+}
+
 /** Narrow agents face (the registry's create, structurally). */
 export interface AgentsFace {
   /** Restore a compatible scheduled session; undefined means it is unavailable. */
@@ -58,6 +72,11 @@ export interface AgentsFace {
     /** Live sessions borrowed from another owner must survive cancelled startup. */
     borrowed?: boolean
   }>
+}
+
+/** A live agent retained by DSH across a plugin hot reload. */
+export type LiveAgentFace = Awaited<ReturnType<AgentsFace['create']>>['agent'] & {
+  cancel(cause: { kind: 'user' }): void
 }
 
 /**
@@ -100,6 +119,8 @@ export interface ExecutionDeps {
   renameSession?: (sessionId: string, title: string) => void
   /** Max concurrently running executions across all tasks (default 3). */
   maxConcurrent?: number | (() => number)
+  /** Resolve a still-live agent so reload reconciliation can adopt its run. */
+  liveAgent?: (sessionId: string) => LiveAgentFace | undefined
   /**
    * Git face for worktree isolation (0.3.0). Absent → every worktree-mode
    * task degrades to the original directory with an isolationNote.
@@ -171,6 +192,9 @@ interface RunEntry {
   dispose: () => Promise<void>
 }
 
+const ACTIVITY_PERSIST_MS = 60_000
+const ACTIVITY_EVENTS = new Set(['turn/start', 'turn/step', 'turn/progress', 'agent/step', 'agent/thought', 'user/message'])
+
 /**
  * The execution service.
  */
@@ -181,9 +205,17 @@ export class ExecutionService {
   /** Detaches the turn/end listener (plugin teardown — review P1). */
   private readonly unsubscribeEvents: () => void
 
+  /** Last activity persistence attempt per live session (avoid per-event disk writes). */
+  private readonly lastActivityAt = new Map<string, number>()
+
   /** @param deps - store + agents + workspaces + events + clock. */
   constructor(private readonly deps: ExecutionDeps) {
     this.unsubscribeEvents = deps.events.onSessionEvent((sessionId, event) => {
+      if (ACTIVITY_EVENTS.has(event.type)) {
+        this.noteActivity(sessionId).catch(error => {
+          console.error('[dsh-taskboard] activity persistence error:', error)
+        })
+      }
       if (event.type !== 'turn/end') return
       // S7 (open question): ANY turn/end with an error reason fails the whole
       // execution and hands the task back. Whether the DSH session loop can
@@ -202,6 +234,75 @@ export class ExecutionService {
   /** Detach the settlement listener; safe to call once at plugin teardown. */
   dispose(): void {
     this.unsubscribeEvents()
+  }
+
+  /** Record execution activity at most once per minute for an accurate stale badge. */
+  private async noteActivity(sessionId: string): Promise<void> {
+    const now = this.deps.now()
+    const previous = this.lastActivityAt.get(sessionId)
+    if (previous !== undefined && now - previous < ACTIVITY_PERSIST_MS) return
+    const entry = [...this.runs.entries()].find(([, run]) => run.sessionId === sessionId)
+    if (entry === undefined) return
+    this.lastActivityAt.set(sessionId, now)
+    const [executionId] = entry
+    await this.deps.store.mutate('execution-recorded', ledger => {
+      for (const task of ledger.tasks) {
+        const execution = task.executions.find(current => current.id === executionId)
+        if (execution?.outcome !== 'running') continue
+        if (execution.lastActivityAt !== undefined && now - execution.lastActivityAt < ACTIVITY_PERSIST_MS) return undefined
+        execution.lastActivityAt = now
+        return [task]
+      }
+      return undefined
+    })
+  }
+
+  /** Recreate enough mirror metadata from the durable start record to collect settlement facts. */
+  private preparedFromExecution(execution: ExecutionRecord): PreparedMirror | undefined {
+    if (execution.repos !== undefined && execution.repos.length > 0
+      && execution.repos.every(repo => repo.baseCommit !== undefined)) {
+      const repos = execution.repos.map(repo => ({
+        repo: repo.repo,
+        branch: repo.branch,
+        worktreePath: repo.worktreePath,
+        baseCommit: repo.baseCommit!,
+        reused: true,
+      }))
+      return { root: repos.find(repo => repo.repo === '')?.worktreePath ?? repos[0]!.worktreePath, repos, skipped: [], allReused: true }
+    }
+    if (execution.branch !== undefined && execution.worktreePath !== undefined && execution.baseCommit !== undefined) {
+      return {
+        root: execution.worktreePath,
+        repos: [{ repo: '', branch: execution.branch, worktreePath: execution.worktreePath, baseCommit: execution.baseCommit, reused: true }],
+        skipped: [],
+        allReused: true,
+      }
+    }
+    return undefined
+  }
+
+  /** Attach a new-generation settlement watcher without taking ownership of the live agent. */
+  private adoptLiveRun(executionId: string, sessionId: string, agent: LiveAgentFace, prepared: PreparedMirror | undefined): void {
+    if (this.runs.has(executionId)) return
+    const settle = (): void => {
+      if (!this.runs.has(executionId)) return
+      this.runs.delete(executionId)
+      void this.settleExecution(executionId, sessionId, prepared)
+    }
+    this.runs.set(executionId, {
+      sessionId,
+      ...(prepared !== undefined ? { prepared } : {}),
+      settle,
+      // The hot-reloaded service did not create this agent, but it can still
+      // honor the existing stop button through the live registry face.
+      dispose: async () => { agent.cancel({ kind: 'user' }); await agent.whenIdle() },
+    })
+    this.lastActivityAt.set(sessionId, this.deps.now())
+    void agent.whenIdle().then(settle, () => {
+      this.noteFailure(sessionId, 'agent did not reach quiescence', executionId)
+        .then(() => { this.runs.delete(executionId) })
+        .catch(() => { this.runs.delete(executionId) })
+    })
   }
 
   /**
@@ -419,6 +520,7 @@ export class ExecutionService {
         id: executionId,
         trigger,
         startedAt: this.deps.now(),
+        lastActivityAt: this.deps.now(),
         outcome: 'running',
         ...(isolation === 'none' ? { isolation: 'none' as const } : { isolation: 'worktree' as const, branch }),
       })
@@ -610,7 +712,7 @@ export class ExecutionService {
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
       role: 'user' as const,
       content: [{ type: 'text' as const, text: this.pluginFraming(task, prepared, isolationNote) }],
-      source: { kind: 'plugin' as const, plugin: 'dsh-taskboard' },
+      source: { kind: 'dsh-taskboard' as const },
     })
     handle.agent.followup({
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
@@ -629,6 +731,7 @@ export class ExecutionService {
       void this.settleExecution(executionId, sessionId, prepared)
     }
     this.runs.set(executionId, { sessionId, ...(prepared !== undefined ? { prepared } : {}), settle, dispose: () => handle.dispose() })
+    this.lastActivityAt.set(sessionId, this.deps.now())
     // R2: the rejection path owns its state transition EXCLUSIVELY — the old
     // code also called settle() here, racing two evidence collections whose
     // mutations both checked outcome === 'running': whoever committed first
@@ -666,6 +769,55 @@ export class ExecutionService {
           if (t.status === 'in_progress' && t.claimedBy === sessionId) {
             delete t.claimedBy
             delete t.claimedAt
+          }
+          const periodicCompletion = execution.trigger === 'scheduled' && t.execution.cron !== undefined
+            ? t.execution.periodicCompletion ?? 'spawn'
+            : undefined
+          // These policies are host-owned: an agent may follow the ordinary
+          // hand-off protocol and already have moved the card to in_review,
+          // but that must never suppress the selected periodic continuation.
+          if (periodicCompletion === 'rearm') {
+            t.status = 'todo'
+            t.updatedAt = now
+            t.updatedBy = { kind: 'system' }
+            t.comments.push({
+              id: newCommentId(),
+              body: normalizeBody('[系统] 定期任务本轮执行完成，已按设置自动回到待办，等待下一次触发。'),
+              systemKey: 'sys.periodicRearmed',
+              version: 1,
+              createdAt: now,
+            })
+            return [t]
+          }
+          if (periodicCompletion === 'spawn') {
+            const match = parseCron(t.execution.cron!)
+            const next = match === null ? undefined : nextCronTime(match, now) ?? undefined
+            t.status = 'in_review'
+            t.updatedAt = now
+            t.updatedBy = { kind: 'system' }
+            if (next !== undefined) {
+              const successor = spawnNextCycle(t, executionId, now)
+              t.execution = { mode: 'claim' }
+              t.comments.push({
+                id: newCommentId(),
+                body: normalizeBody(`[系统] 定期任务本轮执行完毕，已按设置新建待办卡 ${successor.id} 承接下一轮，请审查本卡后验收。`),
+                systemKey: 'sys.periodicHandoff',
+                systemParams: { nextTaskId: successor.id },
+                version: 1,
+                createdAt: now,
+              })
+              ledger.tasks.push(successor)
+              return [t, successor]
+            }
+            t.execution = { mode: 'claim' }
+            t.comments.push({
+              id: newCommentId(),
+              body: normalizeBody('[系统] 定期表达式已无未来触发时间，本轮结束后定时停用；如需继续请重新设置。'),
+              systemKey: 'sys.cronDead',
+              version: 1,
+              createdAt: now,
+            })
+            return [t]
           }
           if (t.status === 'in_progress') {
             const commented = t.comments.some(c => c.threadId === sessionId && c.createdAt >= (execution.startedAt ?? 0))
@@ -834,18 +986,30 @@ export class ExecutionService {
   }
 
   /**
-   * Startup reconciliation after a host restart: executions left `running`
-   * by the previous process can never settle here (their settlement watchers
-   * died with it), so mark them failed and hand their tasks back to todo.
+   * Reconcile running records after load. A real process restart leaves no
+   * live agent, but a plugin hot reload does; retain and adopt those runs
+   * instead of recording a false "interrupted by host restart" failure.
    */
   async reconcile(): Promise<void> {
+    const adopted = new Map<string, { sessionId: string; agent: LiveAgentFace; prepared: PreparedMirror | undefined }>()
+    for (const task of this.deps.store.snapshot().tasks) {
+      for (const execution of task.executions) {
+        if (execution.outcome !== 'running' || execution.sessionId === undefined) continue
+        const agent = this.deps.liveAgent?.(execution.sessionId)
+        if (agent !== undefined) adopted.set(execution.id, {
+          sessionId: execution.sessionId,
+          agent,
+          prepared: this.preparedFromExecution(execution),
+        })
+      }
+    }
     await this.deps.store.mutate('execution-recorded', (ledger) => {
       const now = this.deps.now()
       const touched: TaskRecord[] = []
       for (const task of ledger.tasks) {
         let dirty = false
         for (const execution of task.executions) {
-          if (execution.outcome === 'running') {
+          if (execution.outcome === 'running' && !adopted.has(execution.id)) {
             execution.outcome = 'failed'
             execution.error = 'interrupted by host restart'
             execution.endedAt = now
@@ -863,6 +1027,14 @@ export class ExecutionService {
       }
       return touched.length > 0 ? touched : undefined
     })
+    for (const [executionId, entry] of adopted) {
+      // A concurrent old-generation settlement may already have finished it;
+      // the idempotent settlement mutation below then becomes a no-op.
+      const stillRunning = this.deps.store.snapshot().tasks.some(task =>
+        task.executions.some(execution => execution.id === executionId && execution.outcome === 'running'))
+      if (!stillRunning) continue
+      this.adoptLiveRun(executionId, entry.sessionId, entry.agent, entry.prepared)
+    }
   }
 
   /**
@@ -878,13 +1050,20 @@ export class ExecutionService {
    * @param degradeNote - why a worktree task degraded to the main directory.
    */
   private pluginFraming(task: TaskRecord, prepared?: PreparedMirror, degradeNote?: string): string {
+    const periodicCompletion = task.execution.mode === 'scheduled' && task.execution.cron !== undefined
+      ? task.execution.periodicCompletion ?? 'spawn'
+      : undefined
     let text = `【任务看板】${task.title}（ID: ${task.id}）\n`
       + `本会话由任务看板执行服务启动，任务已置为进行中——无需认领；「已完成」仅限用户在界面操作（代码已限制，移了会被拒）。\n`
       + `完成后按序交接：\n`
       + `1. taskboard_get 读取本任务，取得最新 version\n`
       + `2. taskboard_execution_report 提交结构化执行报告（做了什么/改了哪些文件/如何验证/剩余风险；提交与评论不冲突，都会展示给验收人）\n`
       + `3. taskboard_comment_add 留评论：做了什么改动 / 如何验证 / 剩余风险\n`
-      + `4. taskboard_move 将本任务移至待验收 in_review（带 ifVersion）\n`
+      + `${periodicCompletion === 'rearm'
+        ? '4. 本任务设为“完成后移回待办”：完成报告和评论后无需改变状态，宿主会在会话结束时自动回到待办。\n'
+        : periodicCompletion === 'spawn'
+          ? '4. 本任务设为“完成后新建待办”：完成报告和评论后无需改变状态，宿主会保留本卡待验收并新建下一轮待办卡。\n'
+          : '4. taskboard_move 将本任务移至待验收 in_review（带 ifVersion）\n'}`
       + `若无法完成：留评论说明原因，将任务移回待办 todo。`
     if (task.checklist !== undefined && task.checklist.length > 0) {
       const items = task.checklist
