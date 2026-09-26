@@ -1,7 +1,11 @@
 # 本地增强说明（本 fork 相对上游的差异）
 
-> 本仓库 fork 自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard)，在**上游 v0.6.2 基准**上重放了本机（1254087415）的本地独有增强，2026-09-11 合并至 v0.6.7，并于 2026-09-25 合并 **upstream/main（v0.7.0–v0.8.1）**；同时保留本 fork 的会话跟踪与卡片反向跳转增强。上游 `main` 更新时通过 `git fetch upstream && git merge upstream/main` 合并，冲突在本仓库解决。
+> 本仓库 fork 自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard)，在**上游 v0.6.2 基准**上重放了本机（1254087415）的本地独有增强，2026-09-11 合并至 v0.6.7，2026-09-25 合并 **upstream/main（v0.7.0–v0.8.1）**，2026-09-27 合并 **upstream/main（v0.8.2–v0.8.3）**；同时保留本 fork 的会话跟踪与卡片反向跳转增强。上游 `main` 更新时通过 `git fetch upstream && git merge upstream/main` 合并，冲突在本仓库解决。
 > 完整记录见本机 `~/Documents/project/docs/dsh-taskboard-本地增强记录.md` 第 5 节。
+>
+> **v0.8.3 合并影响面（2026-09-27 核对）**：上游本次改动**正好覆盖本 fork 的「卡 → 会话」链路**——PR #37 把跳转从 `sessions.open`（DSH 0.1.6 起已移除）改为 `uiWorkspace.openSession`，本机 DSH 为 0.1.7-rc.2，合并后该按钮从「unavailable」恢复可用；#38 台账写入拒绝用旧快照覆盖新文件，对 tracker/sync 并发写更安全；#39/#40 修正「进行中任务被误判 failed / 认领超时误报」；#33 适配 DSH 0.1.7-rc.2 的执行开场注入。本地 5 项增强（session-tracker / 会话导入 / 双向跳转 / 侧边栏 4 数字 / 协议纪律 9-10）经文件与接线逐项核对后完整保留，`npm run typecheck` 干净、测试 360/360 通过。
+>
+> **本机跑测试的坑（Node 26）**：Node 26 自带 `localStorage` 全局（未指定文件时为 `undefined`），会遮住 jsdom 的实现，使 `tests/client.spec.ts` 里 30 个用例报 `Cannot read properties of undefined (reading 'clear')`——与代码无关（上游 CI 用 Node 22 不受影响）。用 `NODE_OPTIONS="--localstorage-file=/tmp/ls.db" npm test` 即可全绿。
 
 ## 独有增强清单（commit 6d71378 起）
 
